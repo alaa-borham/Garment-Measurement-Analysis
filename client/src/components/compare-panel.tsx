@@ -933,6 +933,7 @@ function RowSelector({
 }) {
   const [search, setSearch] = useState("");
   const [visibleCount, setVisibleCount] = useState(500);
+  const containerRef = useRef<HTMLDivElement>(null);
 
   const filtered = useMemo(() => {
     if (!search.trim()) return rows;
@@ -951,8 +952,26 @@ function RowSelector({
 
   const selectedRowsList = rows.filter((r) => selected.has(r.id));
 
+  // طي تلقائي عند الضغط خارج الصندوق إذا كان توجد صفوف محددة والصندوق مفتوح
+  useEffect(() => {
+    if (collapsed || !selected.size || !onToggleCollapse) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      const target = e.target as Node;
+      if (containerRef.current && !containerRef.current.contains(target)) {
+        // تجاهل إذا تم الضغط داخل portal/dialog/popover/dropdown (خارج container لكن جزء من UI المكوّن)
+        const el = target as HTMLElement;
+        if (el && el.closest && el.closest('[role="dialog"], [role="menu"], [role="listbox"], [data-radix-popper-content-wrapper]')) {
+          return;
+        }
+        onToggleCollapse();
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [collapsed, selected.size, onToggleCollapse]);
+
   return (
-    <div className="rounded-md border bg-muted/30 p-3 space-y-2">
+    <div ref={containerRef} className="rounded-md border bg-muted/30 p-3 space-y-2">
       <div className="flex items-center justify-between flex-wrap gap-2">
         <button
           type="button"
