@@ -136,7 +136,11 @@ function AnalysisPanel({
               </span>
             </div>
             <Link
-              href={`/datasets/${dataset.id}?tab=compare`}
+              href={`/datasets/${dataset.id}`}
+              onClick={(e) => {
+                e.preventDefault();
+                window.open(`/#/datasets/${dataset.id}?tab=compare`, "_blank");
+              }}
               className="text-primary hover:underline flex items-center gap-1 shrink-0 font-medium"
             >
               <ExternalLink className="w-3 h-3" />
@@ -179,7 +183,7 @@ function AnalysisPanel({
             )}
             <iframe
               key={dataset.id}
-              src={`/datasets/${dataset.id}?embed=1&tab=compare`}
+              src={`/#/datasets/${dataset.id}?embed=1&tab=compare`}
               title={dataset.name}
               className="w-full h-full border-0"
               onLoad={() => setIframeLoading(false)}

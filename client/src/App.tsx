@@ -240,9 +240,14 @@ function AppRouter() {
     );
   }
   // وضع embed للتضمين في iframe — بدون Header/TabsBar
-  const isEmbed =
-    typeof window !== "undefined" &&
-    new URLSearchParams(window.location.search).get("embed") === "1";
+  // مع hash routing، الـ query تأتي داخل الـ hash (مثل #/datasets/12?embed=1)
+  const isEmbed = (() => {
+    if (typeof window === "undefined") return false;
+    const hash = window.location.hash || "";
+    const qIdx = hash.indexOf("?");
+    const qs = qIdx !== -1 ? hash.slice(qIdx + 1) : window.location.search.replace(/^\?/, "");
+    return new URLSearchParams(qs).get("embed") === "1";
+  })();
   if (isEmbed) {
     return (
       <div className="min-h-screen bg-background text-foreground">

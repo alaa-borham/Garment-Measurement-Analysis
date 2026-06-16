@@ -185,8 +185,22 @@ export default function DatasetPage({ idProp }: { idProp?: number } = {}) {
   const { t, lang } = useContext(LangContext);
   const { toast } = useToast();
   const [, params] = useRoute("/datasets/:id");
-  const [, setLocation] = useLocation();
-  const id = idProp ?? parseInt(params?.id || "0");
+  const [routerLocation, setLocation] = useLocation();
+  // بسبب hash routing، الـ query تأتي داخل routerLocation أو داخل params.id (مثل "12?embed=1")
+  const rawId = params?.id || "0";
+  const idMatch = rawId.match(/^(\d+)/);
+  const id = idProp ?? parseInt(idMatch ? idMatch[1] : "0");
+  // استخراج query string من hash route أو من window.location.search
+  const queryString = (() => {
+    if (typeof window === "undefined") return "";
+    const hash = window.location.hash || "";
+    const qIdx = hash.indexOf("?");
+    if (qIdx !== -1) return hash.slice(qIdx + 1);
+    return window.location.search.startsWith("?")
+      ? window.location.search.slice(1)
+      : window.location.search;
+  })();
+  const queryParams = new URLSearchParams(queryString);
   const { openOrFocus, renameByDataset } = useOpenTabs();
 
   const [conditions, setConditions] = useState<FilterCondition[]>([]);
@@ -200,8 +214,7 @@ export default function DatasetPage({ idProp }: { idProp?: number } = {}) {
   const [sortBy, setSortBy] = useState<{ column: string; dir: "asc" | "desc" } | null>(null);
   // قراءة التبويب الافتراضي من URL (?tab=...) لدعم فتح تبويب محدد في وضع embed
   const initialTab = (() => {
-    if (typeof window === "undefined") return "explore";
-    const t = new URLSearchParams(window.location.search).get("tab");
+    const t = queryParams.get("tab");
     const allowed = ["explore", "analyze", "pivot", "chart", "compare"];
     return t && allowed.includes(t) ? t : "explore";
   })();
@@ -522,9 +535,7 @@ export default function DatasetPage({ idProp }: { idProp?: number } = {}) {
   const NextIcon = lang === "ar" ? ChevronLeft : ChevronRight;
 
   // وضع embed: يخفي header لتضمين الصفحة في iframe (لصفحة المقارنة)
-  const isEmbed =
-    typeof window !== "undefined" &&
-    new URLSearchParams(window.location.search).get("embed") === "1";
+  const isEmbed = queryParams.get("embed") === "1";
 
   return (
     <div>

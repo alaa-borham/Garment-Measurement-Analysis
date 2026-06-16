@@ -151,7 +151,7 @@ function DatasetPanel({
             )}
             <iframe
               key={dataset.id}
-              src={`/datasets/${dataset.id}?embed=1`}
+              src={`/#/datasets/${dataset.id}?embed=1`}
               title={dataset.name}
               className="w-full h-full border-0"
               onLoad={() => setIframeLoading(false)}
