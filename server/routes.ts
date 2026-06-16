@@ -12,6 +12,9 @@ import {
   canAccessDataset,
   getAccessibleDatasetIds,
   authDb,
+  logAudit,
+  notify,
+  getClientIp,
 } from "./auth";
 
 // Middleware: التحقق أن المستخدم يمتلك الـ dataset أو أدمن
@@ -78,9 +81,19 @@ export async function registerRoutes(
   });
 
   // حذف مجموعة بيانات
-  app.delete("/api/datasets/:id", requireDatasetAccess, (req, res) => {
+  app.delete("/api/datasets/:id", requireDatasetAccess, (req: any, res) => {
     const id = parseInt(req.params.id);
+    const ds = storage.getDatasetWithOwner(id);
     storage.deleteDataset(id);
+    try {
+      const u = authDb.prepare("SELECT username FROM users WHERE id = ?").get(req.userId) as any;
+      logAudit(req.userId, u?.username || null, "dataset_deleted", {
+        targetType: "dataset",
+        targetId: String(id),
+        details: { name: ds?.name },
+        ip: getClientIp(req),
+      });
+    } catch {}
     res.json({ ok: true });
   });
 
@@ -118,6 +131,11 @@ export async function registerRoutes(
       return res.status(400).json({ error: "userIds مطلوب كـ array" });
     }
     // حذف الصلاحيات الحالية وإعادة إضافتها
+    // حساب المستخدمين الجدد لإرسال إشعارات
+    const previousIds = (authDb
+      .prepare("SELECT user_id FROM dataset_access WHERE dataset_id = ?")
+      .all(id) as { user_id: number }[]).map((r) => r.user_id);
+    const newIds: number[] = [];
     const tx = authDb.transaction(() => {
       authDb.prepare("DELETE FROM dataset_access WHERE dataset_id = ?").run(id);
       const insert = authDb.prepare(
@@ -127,12 +145,32 @@ export async function registerRoutes(
       for (const uid of userIds) {
         const userIdNum = parseInt(uid);
         if (isNaN(userIdNum)) continue;
-        // لا تجعل المالك يشارك مع نفسه
         if (userIdNum === ds.owner_id) continue;
         insert.run(id, userIdNum, now);
+        newIds.push(userIdNum);
       }
     });
     tx();
+    // إرسال إشعارات لمن أضيفوا حديثاً
+    try {
+      const added = newIds.filter((u) => !previousIds.includes(u));
+      const u = authDb.prepare("SELECT username FROM users WHERE id = ?").get(req.userId) as any;
+      for (const uid of added) {
+        notify(
+          uid,
+          "share",
+          "تمت مشاركة ملف معك",
+          `تمت مشاركة "${ds.name}" معك من ${u?.username || "النظام"}`,
+          `#/datasets/${id}`
+        );
+      }
+      logAudit(req.userId, u?.username || null, "share_granted", {
+        targetType: "dataset",
+        targetId: String(id),
+        details: { added, removed: previousIds.filter((u2) => !newIds.includes(u2)) },
+        ip: getClientIp(req),
+      });
+    } catch (e) { console.error("[share notify] failed:", e); }
     res.json({ ok: true });
   });
 
@@ -175,6 +213,15 @@ export async function registerRoutes(
         });
 
         storage.insertRowsBatch(dataset.id, rows);
+        try {
+          const u = authDb.prepare("SELECT username FROM users WHERE id = ?").get((req as any).userId) as any;
+          logAudit((req as any).userId, u?.username || null, "dataset_uploaded", {
+            targetType: "dataset",
+            targetId: String(dataset.id),
+            details: { name, rows: rows.length },
+            ip: getClientIp(req),
+          });
+        } catch {}
 
         res.json({
           ...dataset,

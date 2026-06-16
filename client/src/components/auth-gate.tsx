@@ -10,6 +10,8 @@ interface User {
   id: number;
   username: string;
   role: string;
+  mustChangePassword?: boolean;
+  lastLogin?: number | null;
 }
 
 interface AuthContextValue {
@@ -18,10 +20,15 @@ interface AuthContextValue {
   logout: () => Promise<void>;
 }
 
-export const AuthContext = createContext<AuthContextValue>({
+interface AuthContextValueFull extends AuthContextValue {
+  refreshUser?: () => Promise<void>;
+}
+
+export const AuthContext = createContext<AuthContextValueFull>({
   user: null,
   authEnabled: false,
   logout: async () => {},
+  refreshUser: async () => {},
 });
 
 export const useAuth = () => useContext(AuthContext);
@@ -258,10 +265,111 @@ export function AuthGate({ children }: { children: ReactNode }) {
     );
   }
 
+  const refreshUser = async () => {
+    try {
+      const me = await fetch("/api/auth/me");
+      if (me.ok) {
+        const data = await me.json();
+        setUser(data.user);
+      }
+    } catch {}
+  };
+
   return (
-    <AuthContext.Provider value={{ user, authEnabled: status === "authed", logout }}>
+    <AuthContext.Provider value={{ user, authEnabled: status === "authed", logout, refreshUser }}>
+      {user?.mustChangePassword && <ForceChangePasswordDialog onSuccess={refreshUser} />}
       {children}
     </AuthContext.Provider>
+  );
+}
+
+// ═══ دايلوغ إجباري لتغيير كلمة المرور ═══
+function ForceChangePasswordDialog({ onSuccess }: { onSuccess: () => Promise<void> }) {
+  const { lang } = useContext(LangContext);
+  const isAr = lang === "ar";
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError("");
+    if (newPassword !== confirm) {
+      setError(isAr ? "كلمتا المرور غير متطابقتين" : "Passwords don't match");
+      return;
+    }
+    if (newPassword.length < 6) {
+      setError(isAr ? "كلمة المرور يجب أن تكون 6 أحرف على الأقل" : "Password must be at least 6 characters");
+      return;
+    }
+    setLoading(true);
+    try {
+      const res = await fetch("/api/auth/change-password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ currentPassword, newPassword }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error || "فشل");
+        setLoading(false);
+        return;
+      }
+      await onSuccess();
+    } catch {
+      setError(isAr ? "تعذّر الاتصال" : "Network error");
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div
+      dir={isAr ? "rtl" : "ltr"}
+      className="fixed inset-0 z-[9999] bg-background/95 backdrop-blur flex items-center justify-center p-4"
+    >
+      <Card className="w-full max-w-md shadow-2xl border-2 border-amber-500/40">
+        <CardContent className="p-8">
+          <div className="flex flex-col items-center mb-6">
+            <div className="w-14 h-14 rounded-2xl bg-amber-500/15 text-amber-600 dark:text-amber-400 flex items-center justify-center mb-3">
+              <AlertCircle className="w-7 h-7" />
+            </div>
+            <h2 className="text-xl font-bold text-center">
+              {isAr ? "يجب تغيير كلمة المرور" : "You must change your password"}
+            </h2>
+            <p className="text-sm text-muted-foreground mt-2 text-center">
+              {isAr
+                ? "لأسباب أمنية، يجب تغيير كلمة المرور الافتراضية قبل المتابعة."
+                : "For security, please change the default password before continuing."}
+            </p>
+          </div>
+          <form onSubmit={submit} className="space-y-4">
+            <div className="space-y-2">
+              <Label>{isAr ? "كلمة المرور الحالية" : "Current password"}</Label>
+              <Input type="password" value={currentPassword} onChange={(e) => setCurrentPassword(e.target.value)} required autoFocus className="h-11" />
+            </div>
+            <div className="space-y-2">
+              <Label>{isAr ? "كلمة المرور الجديدة" : "New password"}</Label>
+              <Input type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} required minLength={6} className="h-11" />
+            </div>
+            <div className="space-y-2">
+              <Label>{isAr ? "تأكيد كلمة المرور" : "Confirm password"}</Label>
+              <Input type="password" value={confirm} onChange={(e) => setConfirm(e.target.value)} required minLength={6} className="h-11" />
+            </div>
+            {error && (
+              <div className="flex items-start gap-2 p-3 rounded-md bg-destructive/10 border border-destructive/30 text-destructive text-sm">
+                <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
+                <span>{error}</span>
+              </div>
+            )}
+            <Button type="submit" disabled={loading} className="w-full h-11 text-base font-semibold">
+              {loading ? (isAr ? "جارٍ الحفظ..." : "Saving...") : (isAr ? "حفظ ومتابعة" : "Save & continue")}
+            </Button>
+          </form>
+        </CardContent>
+      </Card>
+    </div>
   );
 }
 

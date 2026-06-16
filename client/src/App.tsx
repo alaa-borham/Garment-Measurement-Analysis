@@ -14,12 +14,34 @@ import HomePage from "@/pages/home";
 import UploadPage from "@/pages/upload";
 import AnalysisViewPage from "@/pages/analysis-view";
 import AdminUsersPage from "@/pages/admin-users";
+import AuditLogPage from "@/pages/audit-log";
 import DatasetsWorkspace from "@/components/datasets-workspace";
 import TabsBar from "@/components/tabs-bar";
 import { OpenTabsProvider } from "@/lib/open-tabs";
 import { AuthGate, LogoutButton, useAuth } from "@/components/auth-gate";
-import { Users } from "lucide-react";
+import { Users, ScrollText } from "lucide-react";
 import { UpdateBadge } from "@/components/update-badge";
+import { NotificationsBell } from "@/components/notifications-bell";
+
+// رابط سجل العمليات - لـ admin فقط
+function AuditNavLink() {
+  const [location] = useLocation();
+  const { user } = useAuth();
+  const { lang } = useContext(LangContext);
+  const isAr = lang === "ar";
+  if (!user || user.role !== "admin") return null;
+  return (
+    <Link
+      href="/admin/audit"
+      className={`px-3 py-2 rounded-md text-sm hover-elevate flex items-center gap-1 ${
+        location === "/admin/audit" ? "bg-accent text-accent-foreground" : ""
+      }`}
+    >
+      <ScrollText className="w-4 h-4" />
+      {isAr ? "سجل العمليات" : "Audit"}
+    </Link>
+  );
+}
 
 // رابط إدارة المستخدمين - يظهر لـ admin فقط
 function AdminNavLink() {
@@ -96,6 +118,7 @@ function Header() {
             {t.nav.upload}
           </Link>
           <AdminNavLink />
+          <AuditNavLink />
         </nav>
         <div className="flex items-center gap-2">
           <Button
@@ -117,6 +140,7 @@ function Header() {
             {dark ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
           </Button>
           <UpdateBadge />
+          <NotificationsBell />
           <LogoutButton />
         </div>
       </div>
@@ -140,6 +164,7 @@ function AppRouter() {
           <Route path="/upload" component={UploadPage} />
           <Route path="/datasets/:id" component={DatasetsWorkspace} />
           <Route path="/admin/users" component={AdminUsersPage} />
+          <Route path="/admin/audit" component={AuditLogPage} />
           <Route component={NotFound} />
         </Switch>
       </main>

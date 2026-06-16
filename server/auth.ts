@@ -27,10 +27,87 @@ authDb.exec(`
   CREATE TABLE IF NOT EXISTS dataset_access (
     dataset_id INTEGER NOT NULL,
     user_id INTEGER NOT NULL,
+    permission TEXT NOT NULL DEFAULT 'view',
     granted_at INTEGER NOT NULL,
     PRIMARY KEY (dataset_id, user_id)
   );
+  CREATE TABLE IF NOT EXISTS audit_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    username TEXT,
+    action TEXT NOT NULL,
+    target_type TEXT,
+    target_id INTEGER,
+    target_name TEXT,
+    details TEXT,
+    ip TEXT,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_log(created_at DESC);
+  CREATE TABLE IF NOT EXISTS groups (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    description TEXT,
+    created_by INTEGER,
+    created_at INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS group_members (
+    group_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    added_at INTEGER NOT NULL,
+    PRIMARY KEY (group_id, user_id)
+  );
+  CREATE TABLE IF NOT EXISTS dataset_group_access (
+    dataset_id INTEGER NOT NULL,
+    group_id INTEGER NOT NULL,
+    permission TEXT NOT NULL DEFAULT 'view',
+    granted_at INTEGER NOT NULL,
+    PRIMARY KEY (dataset_id, group_id)
+  );
+  CREATE TABLE IF NOT EXISTS notifications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    type TEXT NOT NULL,
+    title TEXT NOT NULL,
+    message TEXT,
+    link TEXT,
+    is_read INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_notif_user ON notifications(user_id, is_read, created_at DESC);
+  CREATE TABLE IF NOT EXISTS dataset_comments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    dataset_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    username TEXT,
+    comment TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_comments_ds ON dataset_comments(dataset_id, created_at);
+  CREATE TABLE IF NOT EXISTS security_questions (
+    user_id INTEGER PRIMARY KEY,
+    question TEXT NOT NULL,
+    answer_hash TEXT NOT NULL,
+    salt TEXT NOT NULL
+  );
 `);
+
+// Migration: إضافة أعمدة جديدة للجداول الموجودة
+try {
+  const userCols = authDb.prepare("PRAGMA table_info(users)").all() as { name: string }[];
+  if (!userCols.some((c) => c.name === "must_change_password")) {
+    authDb.exec("ALTER TABLE users ADD COLUMN must_change_password INTEGER DEFAULT 0");
+  }
+  if (!userCols.some((c) => c.name === "last_login")) {
+    authDb.exec("ALTER TABLE users ADD COLUMN last_login INTEGER");
+  }
+  const accessCols = authDb.prepare("PRAGMA table_info(dataset_access)").all() as { name: string }[];
+  if (accessCols.length > 0 && !accessCols.some((c) => c.name === "permission")) {
+    authDb.exec("ALTER TABLE dataset_access ADD COLUMN permission TEXT NOT NULL DEFAULT 'view'");
+  }
+} catch (e) {
+  console.error("[migration] users/access error:", e);
+}
 
 // Migration: إضافة owner_id لجدول datasets إن لم يكن موجوداً
 try {
@@ -79,7 +156,7 @@ function ensureDefaultUser() {
     const hash = hashPassword(password, salt);
     authDb
       .prepare(
-        "INSERT INTO users (username, password_hash, salt, role, created_at) VALUES (?, ?, ?, ?, ?)"
+        "INSERT INTO users (username, password_hash, salt, role, created_at, must_change_password) VALUES (?, ?, ?, ?, ?, 1)"
       )
       .run("admin", hash, salt, "admin", Date.now());
     console.log("");
@@ -197,6 +274,65 @@ export function getAccessibleDatasetIds(
 // تصدير authDb للاستخدام في routes
 export { authDb };
 
+// ═════════════════════════════════════════════════════════════
+// Helpers: Audit Log + Notifications + Client IP
+// ═════════════════════════════════════════════════════════════
+export function getClientIp(req: any): string {
+  const xfwd = req.headers?.["x-forwarded-for"];
+  if (typeof xfwd === "string" && xfwd.length > 0) return xfwd.split(",")[0].trim();
+  return req.socket?.remoteAddress || req.ip || "";
+}
+
+export function logAudit(
+  userId: number | null,
+  username: string | null,
+  action: string,
+  opts?: { targetType?: string; targetId?: string; details?: any; ip?: string }
+) {
+  try {
+    authDb
+      .prepare(
+        "INSERT INTO audit_log (user_id, username, action, target_type, target_id, details, ip, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+      )
+      .run(
+        userId,
+        username,
+        action,
+        opts?.targetType || null,
+        opts?.targetId || null,
+        opts?.details ? JSON.stringify(opts.details) : null,
+        opts?.ip || null,
+        Date.now()
+      );
+  } catch (e) {
+    console.error("[audit] failed:", e);
+  }
+}
+
+export function notify(
+  userId: number,
+  type: string,
+  title: string,
+  message: string,
+  link?: string
+) {
+  try {
+    authDb
+      .prepare(
+        "INSERT INTO notifications (user_id, type, title, message, link, is_read, created_at) VALUES (?, ?, ?, ?, ?, 0, ?)"
+      )
+      .run(userId, type, title, message, link || null, Date.now());
+  } catch (e) {
+    console.error("[notify] failed:", e);
+  }
+}
+
+export function getUserById(userId: number): User | undefined {
+  return authDb
+    .prepare("SELECT * FROM users WHERE id = ?")
+    .get(userId) as User | undefined;
+}
+
 export function registerAuthRoutes(app: Express) {
   if (process.env.LOCAL_AUTH !== "1") return;
   ensureDefaultUser();
@@ -213,22 +349,31 @@ export function registerAuthRoutes(app: Express) {
       .prepare("SELECT * FROM users WHERE username = ?")
       .get(username) as User | undefined;
     if (!user) {
+      logAudit(null, username, "login_failed", { ip: getClientIp(req), details: { reason: "user_not_found" } });
       return res.status(401).json({ error: "بيانات الدخول غير صحيحة" });
     }
     const hash = hashPassword(password, user.salt);
     if (hash !== user.password_hash) {
+      logAudit(user.id, user.username, "login_failed", { ip: getClientIp(req), details: { reason: "bad_password" } });
       return res.status(401).json({ error: "بيانات الدخول غير صحيحة" });
     }
     const token = makeToken();
-    const expiresAt = Date.now() + 30 * 24 * 60 * 60 * 1000; // 30 يوماً
+    const expiresAt = Date.now() + 30 * 24 * 60 * 60 * 1000;
     authDb
       .prepare(
         "INSERT INTO sessions (token, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)"
       )
       .run(token, user.id, Date.now(), expiresAt);
+    try { authDb.prepare("UPDATE users SET last_login = ? WHERE id = ?").run(Date.now(), user.id); } catch {}
+    logAudit(user.id, user.username, "login", { ip: getClientIp(req) });
     res.json({
       token,
-      user: { id: user.id, username: user.username, role: user.role },
+      user: {
+        id: user.id,
+        username: user.username,
+        role: user.role,
+        mustChangePassword: !!(user as any).must_change_password,
+      },
     });
   });
 
@@ -237,6 +382,13 @@ export function registerAuthRoutes(app: Express) {
     const token =
       req.headers.authorization?.replace(/^Bearer\s+/i, "") || "";
     if (token) {
+      try {
+        const sess = authDb.prepare("SELECT user_id FROM sessions WHERE token = ?").get(token) as { user_id: number } | undefined;
+        if (sess) {
+          const u = getUserById(sess.user_id);
+          logAudit(sess.user_id, u?.username || null, "logout", { ip: getClientIp(req) });
+        }
+      } catch {}
       authDb.prepare("DELETE FROM sessions WHERE token = ?").run(token);
     }
     res.json({ ok: true });
@@ -254,10 +406,18 @@ export function registerAuthRoutes(app: Express) {
       return res.status(401).json({ error: "انتهت الجلسة" });
     }
     const user = authDb
-      .prepare("SELECT id, username, role FROM users WHERE id = ?")
-      .get(session.user_id);
+      .prepare("SELECT id, username, role, must_change_password, last_login FROM users WHERE id = ?")
+      .get(session.user_id) as any;
     if (!user) return res.status(401).json({ error: "غير موجود" });
-    res.json({ user });
+    res.json({
+      user: {
+        id: user.id,
+        username: user.username,
+        role: user.role,
+        mustChangePassword: !!user.must_change_password,
+        lastLogin: user.last_login,
+      },
+    });
   });
 
   // تغيير كلمة المرور
@@ -283,9 +443,45 @@ export function registerAuthRoutes(app: Express) {
     const newHash = hashPassword(newPassword, newSalt);
     authDb
       .prepare(
-        "UPDATE users SET password_hash = ?, salt = ? WHERE id = ?"
+        "UPDATE users SET password_hash = ?, salt = ?, must_change_password = 0 WHERE id = ?"
       )
       .run(newHash, newSalt, userId);
+    logAudit(userId, user.username, "password_changed", { ip: getClientIp(req) });
+    res.json({ ok: true });
+  });
+
+  // ═══ سجل العمليات (Audit Log) - admin فقط ═══
+  app.get("/api/audit-log", requireAuth, (req, res) => {
+    const uid = (req as any).userId;
+    const cur = authDb.prepare("SELECT role FROM users WHERE id = ?").get(uid) as { role: string } | undefined;
+    if (!cur || cur.role !== "admin") return res.status(403).json({ error: "يتطلب صلاحيات المسؤول" });
+    const limit = Math.min(parseInt((req.query.limit as string) || "200", 10) || 200, 1000);
+    const rows = authDb.prepare("SELECT * FROM audit_log ORDER BY id DESC LIMIT ?").all(limit);
+    res.json({ entries: rows });
+  });
+
+  // ═══ الإشعارات ═══
+  app.get("/api/notifications", requireAuth, (req, res) => {
+    const uid = (req as any).userId;
+    const rows = authDb.prepare("SELECT * FROM notifications WHERE user_id = ? ORDER BY id DESC LIMIT 100").all(uid);
+    const unread = (authDb.prepare("SELECT COUNT(*) as c FROM notifications WHERE user_id = ? AND is_read = 0").get(uid) as { c: number }).c;
+    res.json({ notifications: rows, unread });
+  });
+  app.patch("/api/notifications/:id/read", requireAuth, (req, res) => {
+    const uid = (req as any).userId;
+    const id = parseInt(req.params.id, 10);
+    authDb.prepare("UPDATE notifications SET is_read = 1 WHERE id = ? AND user_id = ?").run(id, uid);
+    res.json({ ok: true });
+  });
+  app.patch("/api/notifications/read-all", requireAuth, (req, res) => {
+    const uid = (req as any).userId;
+    authDb.prepare("UPDATE notifications SET is_read = 1 WHERE user_id = ?").run(uid);
+    res.json({ ok: true });
+  });
+  app.delete("/api/notifications/:id", requireAuth, (req, res) => {
+    const uid = (req as any).userId;
+    const id = parseInt(req.params.id, 10);
+    authDb.prepare("DELETE FROM notifications WHERE id = ? AND user_id = ?").run(id, uid);
     res.json({ ok: true });
   });
 
