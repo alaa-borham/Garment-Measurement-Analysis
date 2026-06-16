@@ -534,5 +534,45 @@ export async function registerRoutes(
     }
   });
 
+  // ===== نسخة احتياطية لقاعدة البيانات (محمية بتوكن) =====
+  // تحميل ملف data.db كاملاً. يتطلب Authorization: Bearer <BACKUP_TOKEN>
+  // يُستخدم من المهمة المجدولة الأسبوعية.
+  app.get("/api/admin/backup/db", async (req, res) => {
+    try {
+      const token = process.env.BACKUP_TOKEN;
+      if (!token) {
+        return res.status(503).json({ error: "BACKUP_TOKEN not configured on server" });
+      }
+      const auth = req.headers.authorization || "";
+      const provided = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+      if (provided !== token) {
+        return res.status(401).json({ error: "unauthorized" });
+      }
+      const path = await import("node:path");
+      const fs = await import("node:fs");
+      // نفس المسار المستخدم في storage.ts و auth.ts
+      const dbPath = path.resolve(process.cwd(), "data.db");
+      if (!fs.existsSync(dbPath)) {
+        return res.status(404).json({ error: "data.db not found", path: dbPath });
+      }
+      const stat = fs.statSync(dbPath);
+      res.setHeader("Content-Type", "application/octet-stream");
+      res.setHeader("Content-Length", String(stat.size));
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="data.db"`
+      );
+      const stream = fs.createReadStream(dbPath);
+      stream.pipe(res);
+      stream.on("error", (err) => {
+        console.error("backup stream error:", err);
+        if (!res.headersSent) res.status(500).json({ error: "stream failed" });
+      });
+    } catch (e: any) {
+      console.error("backup endpoint error:", e);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   return httpServer;
 }
