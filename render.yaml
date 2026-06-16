@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: qiyasat
+    runtime: node
+    plan: free
+    region: frankfurt
+    branch: main
+    buildCommand: npm install
+    startCommand: node boot.js
+    healthCheckPath: /
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: 20
+      - key: RENDER
+        value: "true"
+      - key: DATA_DIR
+        value: /var/data
+    disk:
+      name: qiyasat-data
+      mountPath: /var/data
+      sizeGB: 1
