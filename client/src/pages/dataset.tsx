@@ -213,13 +213,30 @@ export default function DatasetPage({ idProp }: { idProp?: number } = {}) {
   const [statsColumn, setStatsColumn] = useState<string>("");
   // ترتيب الصفوف حسب عمود محدد (تصاعدي/تنازلي)
   const [sortBy, setSortBy] = useState<{ column: string; dir: "asc" | "desc" } | null>(null);
-  // قراءة التبويب الافتراضي من URL (?tab=...) لدعم فتح تبويب محدد في وضع embed
+  // وضع embed: يخفي header لتضمين الصفحة في iframe
+  const isEmbedMode = queryParams.get("embed") === "1";
+  // قراءة التبويب الافتراضي: URL أولاً، ثم localStorage للملف، ثم explore
   const initialTab = (() => {
-    const t = queryParams.get("tab");
     const allowed = ["explore", "analyze", "pivot", "chart", "compare"];
-    return t && allowed.includes(t) ? t : "explore";
+    const t = queryParams.get("tab");
+    if (t && allowed.includes(t)) return t;
+    // في وضع embed لا نسترجع من localStorage لأن المصدر خارجي
+    if (!isEmbedMode) {
+      try {
+        const saved = window.localStorage.getItem(`qiyasat-last-tab-${id}`);
+        if (saved && allowed.includes(saved)) return saved;
+      } catch {}
+    }
+    return "explore";
   })();
   const [activeTab, setActiveTab] = useState<string>(initialTab);
+  // حفظ آخر تبويب لكل ملف (لا نحفظ في وضع embed)
+  useEffect(() => {
+    if (isEmbedMode) return;
+    try {
+      window.localStorage.setItem(`qiyasat-last-tab-${id}`, activeTab);
+    } catch {}
+  }, [activeTab, id, isEmbedMode]);
   const { user: authUser } = useAuth();
   const canFeat = (f: string) => {
     if (!authUser) return true;
@@ -542,8 +559,8 @@ export default function DatasetPage({ idProp }: { idProp?: number } = {}) {
   const PrevIcon = lang === "ar" ? ChevronRight : ChevronLeft;
   const NextIcon = lang === "ar" ? ChevronLeft : ChevronRight;
 
-  // وضع embed: يخفي header لتضمين الصفحة في iframe (لصفحة المقارنة)
-  const isEmbed = queryParams.get("embed") === "1";
+  // وضع embed (معرّف أعلى باسم isEmbedMode)
+  const isEmbed = isEmbedMode;
 
   return (
     <div>

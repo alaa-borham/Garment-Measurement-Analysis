@@ -20,9 +20,14 @@ import {
   ExternalLink,
   ChevronDown,
   ChevronUp,
+  Download,
+  Save,
+  FolderOpen,
+  X,
 } from "lucide-react";
 import { LangContext } from "@/lib/i18n";
 import { apiRequest } from "@/lib/queryClient";
+import { exportCompareToExcel } from "@/lib/compare-export";
 
 interface AdvancedAnalysisProps {
   datasetId: number;
@@ -132,6 +137,17 @@ export default function AdvancedAnalysisPanel({ datasetId, columns }: AdvancedAn
     showMore: isAr ? "عرض 500 إضافي" : "Show 500 more",
     useSearch: isAr ? "استخدم البحث لإيجاد صف آخر" : "Use search to find more",
     openInNewTab: isAr ? "فتح في نافذة جديدة" : "Open in new window",
+    exportExcel: isAr ? "تصدير Excel" : "Export Excel",
+    templates: isAr ? "القوالب" : "Templates",
+    saveTemplate: isAr ? "حفظ كقالب" : "Save as template",
+    loadTemplate: isAr ? "تحميل قالب" : "Load template",
+    templateName: isAr ? "اسم القالب" : "Template name",
+    save: isAr ? "حفظ" : "Save",
+    cancel: isAr ? "إلغاء" : "Cancel",
+    noTemplates: isAr ? "لا توجد قوالب محفوظة" : "No saved templates",
+    deleteTpl: isAr ? "حذف" : "Delete",
+    templateSaved: isAr ? "تم حفظ القالب" : "Template saved",
+    templateLoaded: isAr ? "تم تحميل القالب" : "Template loaded",
     waitingForData: isAr ? "بانتظار البيانات من النافذة الأصلية..." : "Waiting for data from main window...",
     liveSync: isAr ? "مزامنة مباشرة" : "Live sync",
     closed: isAr ? "تم إغلاق النافذة الأصلية" : "Main window closed",
@@ -172,6 +188,74 @@ export default function AdvancedAnalysisPanel({ datasetId, columns }: AdvancedAn
 
   // عمود اسم الصف (اختياري)
   const [labelCol, setLabelCol] = useState<string>("");
+
+  // التبويب الحالي (للقوالب)
+  const [activeTab, setActiveTab] = useState<"matrix" | "two-rows" | "sequential">("matrix");
+
+  // قوالب المقارنة المحفوظة (localStorage)
+  interface CompareTemplate {
+    id: string;
+    name: string;
+    mode: "matrix" | "two-rows" | "sequential";
+    selectedCols: string[];
+    selectedRowIds: number[];
+    bands: ColorBand[];
+    matrixRef: "first" | "previous" | "raw";
+    labelCol: string;
+    createdAt: number;
+  }
+  const TPL_KEY = `qiyasat-compare-templates-${datasetId}`;
+  const [templates, setTemplates] = useState<CompareTemplate[]>(() => {
+    try {
+      const raw = localStorage.getItem(TPL_KEY);
+      return raw ? (JSON.parse(raw) as CompareTemplate[]) : [];
+    } catch {
+      return [];
+    }
+  });
+  const [showSaveTplDialog, setShowSaveTplDialog] = useState(false);
+  const [showLoadTplDialog, setShowLoadTplDialog] = useState(false);
+  const [newTplName, setNewTplName] = useState("");
+
+  const persistTemplates = (next: CompareTemplate[]) => {
+    setTemplates(next);
+    try {
+      localStorage.setItem(TPL_KEY, JSON.stringify(next));
+    } catch {}
+  };
+
+  const saveCurrentAsTemplate = () => {
+    const name = newTplName.trim();
+    if (!name) return;
+    const tpl: CompareTemplate = {
+      id: `tpl-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      name,
+      mode: activeTab,
+      selectedCols: Array.from(selectedCols),
+      selectedRowIds: Array.from(selectedRowIds),
+      bands,
+      matrixRef,
+      labelCol,
+      createdAt: Date.now(),
+    };
+    persistTemplates([tpl, ...templates]);
+    setNewTplName("");
+    setShowSaveTplDialog(false);
+  };
+
+  const loadTemplate = (tpl: CompareTemplate) => {
+    setActiveTab(tpl.mode);
+    setSelectedCols(new Set(tpl.selectedCols));
+    setSelectedRowIds(new Set(tpl.selectedRowIds));
+    setBands(tpl.bands && tpl.bands.length ? tpl.bands : DEFAULT_BANDS);
+    setMatrixRef(tpl.matrixRef || "first");
+    setLabelCol(tpl.labelCol || "");
+    setShowLoadTplDialog(false);
+  };
+
+  const deleteTemplate = (id: string) => {
+    persistTemplates(templates.filter((t) => t.id !== id));
+  };
 
   // التحديد الفعال للحساب
   const [computed, setComputed] = useState<null | {
@@ -438,7 +522,154 @@ export default function AdvancedAnalysisPanel({ datasetId, columns }: AdvancedAn
   return (
     <Card>
       <CardContent className="p-4 space-y-4">
-        <Tabs defaultValue="matrix">
+        {/* شريط القوالب */}
+        <div className="flex flex-wrap items-center gap-2 pb-2 border-b">
+          <span className="text-xs font-semibold text-muted-foreground">{L.templates}:</span>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setShowSaveTplDialog(true)}
+            disabled={!selectedCols.size && !selectedRowIds.size}
+            className="h-7 text-xs gap-1"
+            data-testid="button-save-template"
+          >
+            <Save className="w-3.5 h-3.5" />
+            {L.saveTemplate}
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setShowLoadTplDialog(true)}
+            className="h-7 text-xs gap-1"
+            data-testid="button-load-template"
+          >
+            <FolderOpen className="w-3.5 h-3.5" />
+            {L.loadTemplate}
+            {templates.length > 0 && (
+              <span className="ms-1 rounded-full bg-primary/10 px-1.5 text-[10px] font-semibold">
+                {templates.length}
+              </span>
+            )}
+          </Button>
+        </div>
+
+        {/* حوار حفظ قالب */}
+        {showSaveTplDialog && (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+            onClick={() => setShowSaveTplDialog(false)}
+          >
+            <div
+              className="bg-background border rounded-lg shadow-lg p-4 w-full max-w-md space-y-3"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between">
+                <h3 className="font-semibold text-sm">{L.saveTemplate}</h3>
+                <button
+                  type="button"
+                  onClick={() => setShowSaveTplDialog(false)}
+                  className="text-muted-foreground hover:text-foreground"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+              <div className="space-y-1">
+                <Label className="text-xs">{L.templateName}</Label>
+                <Input
+                  value={newTplName}
+                  onChange={(e) => setNewTplName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && newTplName.trim()) saveCurrentAsTemplate();
+                  }}
+                  autoFocus
+                  data-testid="input-template-name"
+                />
+                <p className="text-[11px] text-muted-foreground">
+                  {isAr
+                    ? `سيتم حفظ: ${selectedCols.size} عمود، ${selectedRowIds.size} صف، ${bands.length} لون`
+                    : `Will save: ${selectedCols.size} cols, ${selectedRowIds.size} rows, ${bands.length} colors`}
+                </p>
+              </div>
+              <div className="flex justify-end gap-2">
+                <Button variant="outline" size="sm" onClick={() => setShowSaveTplDialog(false)}>
+                  {L.cancel}
+                </Button>
+                <Button size="sm" onClick={saveCurrentAsTemplate} disabled={!newTplName.trim()}>
+                  {L.save}
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* حوار تحميل قالب */}
+        {showLoadTplDialog && (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+            onClick={() => setShowLoadTplDialog(false)}
+          >
+            <div
+              className="bg-background border rounded-lg shadow-lg p-4 w-full max-w-lg space-y-3"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between">
+                <h3 className="font-semibold text-sm">{L.loadTemplate}</h3>
+                <button
+                  type="button"
+                  onClick={() => setShowLoadTplDialog(false)}
+                  className="text-muted-foreground hover:text-foreground"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+              {templates.length === 0 ? (
+                <p className="text-sm text-muted-foreground py-4 text-center">{L.noTemplates}</p>
+              ) : (
+                <div className="max-h-80 overflow-y-auto space-y-1.5">
+                  {templates.map((tpl) => (
+                    <div
+                      key={tpl.id}
+                      className="flex items-center justify-between gap-2 p-2 rounded border hover:bg-muted/50"
+                    >
+                      <button
+                        type="button"
+                        onClick={() => loadTemplate(tpl)}
+                        className="flex-1 text-start min-w-0"
+                        data-testid={`load-template-${tpl.id}`}
+                      >
+                        <div className="font-medium text-sm truncate">{tpl.name}</div>
+                        <div className="text-[11px] text-muted-foreground">
+                          {tpl.mode === "matrix"
+                            ? L.modeMatrix
+                            : tpl.mode === "two-rows"
+                            ? L.modeTwoRows
+                            : L.modeSequential}
+                          {" • "}
+                          {tpl.selectedCols.length} {isAr ? "عمود" : "cols"}
+                          {" • "}
+                          {tpl.selectedRowIds.length} {isAr ? "صف" : "rows"}
+                          {" • "}
+                          {tpl.bands.length} {isAr ? "لون" : "colors"}
+                        </div>
+                      </button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => deleteTemplate(tpl.id)}
+                        className="h-7 w-7 p-0 text-destructive"
+                        data-testid={`delete-template-${tpl.id}`}
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as any)}>
           <TabsList>
             <TabsTrigger value="matrix" data-testid="adv-mode-matrix">
               <Grid3x3 className="w-4 h-4 me-2" />
@@ -638,7 +869,26 @@ export default function AdvancedAnalysisPanel({ datasetId, columns }: AdvancedAn
         {/* النتائج */}
         {computed && (
           <div className="space-y-2">
-            <div className="flex justify-end">
+            <div className="flex justify-end gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  try {
+                    exportCompareToExcel(computed, bands, rowLabel, {
+                      isAr,
+                      datasetName: `dataset-${datasetId}`,
+                    });
+                  } catch (err) {
+                    console.error("Excel export failed", err);
+                  }
+                }}
+                className="h-8 text-xs gap-1.5"
+                data-testid="button-export-excel"
+              >
+                <Download className="w-3.5 h-3.5" />
+                {L.exportExcel}
+              </Button>
               <Button
                 variant="outline"
                 size="sm"
