@@ -251,19 +251,6 @@ function AppRouter() {
   if (isEmbed) {
     return (
       <div className="min-h-screen bg-background text-foreground embed-mode">
-        <style>{`
-          .embed-mode table th, .embed-mode table td { padding-top: 4px !important; padding-bottom: 4px !important; padding-left: 6px !important; padding-right: 6px !important; font-size: 12px !important; }
-          .embed-mode table { font-size: 12px !important; }
-          .embed-mode .h-9 { height: 32px !important; }
-          .embed-mode .text-sm { font-size: 12px !important; }
-          .embed-mode .text-base { font-size: 13px !important; }
-          .embed-mode .text-xl, .embed-mode .text-2xl { font-size: 15px !important; }
-          .embed-mode .px-4 { padding-left: 8px !important; padding-right: 8px !important; }
-          .embed-mode .py-3 { padding-top: 6px !important; padding-bottom: 6px !important; }
-          .embed-mode .py-2 { padding-top: 4px !important; padding-bottom: 4px !important; }
-          .embed-mode .gap-3 { gap: 6px !important; }
-          .embed-mode .gap-4 { gap: 8px !important; }
-        `}</style>
         <main className="px-2 py-2">
           <Suspense fallback={<PageLoader />}>
             <Switch>
