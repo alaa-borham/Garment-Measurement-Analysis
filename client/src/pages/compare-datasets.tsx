@@ -14,6 +14,8 @@ import {
   Plus,
   Sparkles,
   RotateCcw,
+  ChevronDown,
+  ChevronUp,
 } from "lucide-react";
 import { LangContext } from "@/lib/i18n";
 import { Link } from "wouter";
@@ -181,6 +183,11 @@ function DatasetPanel({
   const [logic, setLogic] = useState<"AND" | "OR">("AND");
   const [appliedConditions, setAppliedConditions] = useState<FilterCondition[]>([]);
   const [appliedLogic, setAppliedLogic] = useState<"AND" | "OR">("AND");
+
+  // أقسام قابلة للطي/الفتح
+  const [showStats, setShowStats] = useState(true);
+  const [showChart, setShowChart] = useState(true);
+  const [showAllCols, setShowAllCols] = useState(true);
 
   // تحميل بيانات الملف عند تغير المعرف أو الفلاتر المطبقة
   useEffect(() => {
@@ -587,7 +594,11 @@ function DatasetPanel({
             {/* إحصائيات تفصيلية للعمود المحدد */}
             {analyzeColumn && (
               <div className="rounded-xl border-2 border-primary/20 bg-gradient-to-br from-primary/5 via-transparent to-transparent p-3 space-y-3">
-                <div className="text-sm font-bold flex items-center justify-between border-b border-primary/20 pb-2">
+                <button
+                  type="button"
+                  onClick={() => setShowStats((s) => !s)}
+                  className="text-sm font-bold flex items-center justify-between border-b border-primary/20 pb-2 w-full hover:opacity-80 transition-opacity"
+                >
                   <span className="flex items-center gap-1.5 truncate">
                     <TrendingUp className="w-4 h-4 text-primary shrink-0" />
                     <span className="truncate" title={analyzeColumn}>{analyzeColumn}</span>
@@ -597,10 +608,17 @@ function DatasetPanel({
                       </Badge>
                     )}
                   </span>
-                  {statsLoading && <Loader2 className="w-3.5 h-3.5 animate-spin text-primary shrink-0" />}
-                </div>
+                  <span className="flex items-center gap-1 shrink-0">
+                    {statsLoading && <Loader2 className="w-3.5 h-3.5 animate-spin text-primary" />}
+                    {showStats ? (
+                      <ChevronUp className="w-4 h-4 text-muted-foreground" />
+                    ) : (
+                      <ChevronDown className="w-4 h-4 text-muted-foreground" />
+                    )}
+                  </span>
+                </button>
 
-                {columnStats && !hasActiveFilters ? (
+                {showStats && (columnStats && !hasActiveFilters ? (
                   <div className="grid grid-cols-3 gap-2">
                     <StatBox label={isAr ? "العدد" : "Count"} value={fmtNum(columnStats.count)} tooltip={String(columnStats.count)} />
                     <StatBox label={isAr ? "المجموع" : "Sum"} value={fmtNum(columnStats.sum)} tooltip={String(columnStats.sum)} />
@@ -627,19 +645,31 @@ function DatasetPanel({
                   <div className="text-xs text-muted-foreground text-center py-4">
                     {isAr ? "لا توجد بيانات" : "No data"}
                   </div>
-                )}
+                ))}
               </div>
             )}
 
             {/* رسم بياني (Histogram) */}
             {histogramData.length > 0 && (
               <div className="space-y-2">
-                <div className="text-xs font-semibold text-muted-foreground uppercase tracking-wide flex items-center justify-between">
+                <button
+                  type="button"
+                  onClick={() => setShowChart((s) => !s)}
+                  className="text-xs font-semibold text-muted-foreground uppercase tracking-wide flex items-center justify-between w-full hover:text-foreground transition-colors"
+                >
                   <span>{isAr ? "توزيع القيم" : "Distribution"}</span>
-                  <span className="text-[10px] font-normal normal-case">
-                    {isAr ? "10 فترات" : "10 bins"}
+                  <span className="flex items-center gap-1">
+                    <span className="text-[10px] font-normal normal-case">
+                      {isAr ? "10 فترات" : "10 bins"}
+                    </span>
+                    {showChart ? (
+                      <ChevronUp className="w-3.5 h-3.5" />
+                    ) : (
+                      <ChevronDown className="w-3.5 h-3.5" />
+                    )}
                   </span>
-                </div>
+                </button>
+                {showChart && (
                 <div className="h-44 rounded-lg border bg-card p-2">
                   <ResponsiveContainer width="100%" height="100%">
                     <BarChart data={histogramData} margin={{ top: 5, right: 8, left: 0, bottom: 5 }}>
@@ -666,18 +696,31 @@ function DatasetPanel({
                     </BarChart>
                   </ResponsiveContainer>
                 </div>
+                )}
               </div>
             )}
 
             {/* جدول كل الإحصائيات الرقمية */}
             {numericColumns.length > 1 && (
               <div className="space-y-2">
-                <div className="text-xs font-semibold text-muted-foreground uppercase tracking-wide flex items-center justify-between">
+                <button
+                  type="button"
+                  onClick={() => setShowAllCols((s) => !s)}
+                  className="text-xs font-semibold text-muted-foreground uppercase tracking-wide flex items-center justify-between w-full hover:text-foreground transition-colors"
+                >
                   <span>{isAr ? "كل الأعمدة الرقمية" : "All numeric columns"}</span>
-                  <span className="text-[10px] font-normal normal-case">
-                    {isAr ? "اضغط للتحليل" : "Click to analyze"}
+                  <span className="flex items-center gap-1">
+                    <span className="text-[10px] font-normal normal-case">
+                      {isAr ? "اضغط للتحليل" : "Click to analyze"}
+                    </span>
+                    {showAllCols ? (
+                      <ChevronUp className="w-3.5 h-3.5" />
+                    ) : (
+                      <ChevronDown className="w-3.5 h-3.5" />
+                    )}
                   </span>
-                </div>
+                </button>
+                {showAllCols && (
                 <div className="max-h-56 overflow-y-auto rounded-lg border bg-card">
                   <table className="w-full text-xs">
                     <thead className="bg-muted/80 sticky top-0 backdrop-blur">
@@ -731,6 +774,7 @@ function DatasetPanel({
                     </tbody>
                   </table>
                 </div>
+                )}
               </div>
             )}
 
