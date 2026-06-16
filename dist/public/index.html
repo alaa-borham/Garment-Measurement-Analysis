@@ -11,14 +11,30 @@
       href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;500;600;700;800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap"
       rel="stylesheet"
     />
-    <script type="module" crossorigin src="./assets/index-CbVgJ5He.js"></script>
+    <script type="module" crossorigin src="./assets/index-Dic6ds7X.js"></script>
     <link rel="modulepreload" crossorigin href="./assets/react-vendor-BrsKuhUY.js">
     <link rel="modulepreload" crossorigin href="./assets/query-Qck_fztG.js">
     <link rel="modulepreload" crossorigin href="./assets/recharts-yx6E8CWt.js">
-    <link rel="modulepreload" crossorigin href="./assets/icons-DdSm84ib.js">
-    <link rel="stylesheet" crossorigin href="./assets/index-BfVNhYpt.css">
+    <link rel="modulepreload" crossorigin href="./assets/icons-DVBmTAW0.js">
+    <link rel="stylesheet" crossorigin href="./assets/index-B0soQLD_.css">
   </head>
   <body>
+    <script>
+      // تطبيق الثيم واللغة فورًا لتفادي وميض عند فتح تبويب جديد
+      (function () {
+        try {
+          var t = localStorage.getItem("qiyasat-theme");
+          var prefers = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+          var dark = t === "dark" || (!t && prefers);
+          if (dark) document.documentElement.classList.add("dark");
+          var l = localStorage.getItem("qiyasat-lang");
+          if (l === "en" || l === "ar") {
+            document.documentElement.lang = l;
+            document.documentElement.dir = l === "ar" ? "rtl" : "ltr";
+          }
+        } catch (e) {}
+      })();
+    </script>
     <div id="root"></div>
   </body>
 </html>

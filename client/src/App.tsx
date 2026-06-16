@@ -118,15 +118,17 @@ function BackupNavLink() {
 function Header() {
   const [location] = useLocation();
   const { lang, setLang, t } = useContext(LangContext);
-  const [dark, setDark] = useState(false);
-
-  useEffect(() => {
-    const prefers = window.matchMedia?.("(prefers-color-scheme: dark)").matches;
-    setDark(!!prefers);
-  }, []);
+  const [dark, setDark] = useState(() => {
+    if (typeof window === "undefined") return false;
+    const saved = window.localStorage.getItem("qiyasat-theme");
+    if (saved === "dark") return true;
+    if (saved === "light") return false;
+    return !!window.matchMedia?.("(prefers-color-scheme: dark)").matches;
+  });
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", dark);
+    try { window.localStorage.setItem("qiyasat-theme", dark ? "dark" : "light"); } catch {}
   }, [dark]);
 
   useEffect(() => {
@@ -307,7 +309,15 @@ function AppWithRouter() {
 }
 
 function App() {
-  const [lang, setLang] = useState<Lang>("ar");
+  const [lang, setLangState] = useState<Lang>(() => {
+    if (typeof window === "undefined") return "ar";
+    const saved = window.localStorage.getItem("qiyasat-lang");
+    return saved === "en" || saved === "ar" ? (saved as Lang) : "ar";
+  });
+  const setLang = (l: Lang) => {
+    setLangState(l);
+    try { window.localStorage.setItem("qiyasat-lang", l); } catch {}
+  };
   const value = { lang, setLang, t: translations[lang] };
   return (
     <QueryClientProvider client={queryClient}>

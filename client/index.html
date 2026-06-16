@@ -13,6 +13,22 @@
     />
   </head>
   <body>
+    <script>
+      // تطبيق الثيم واللغة فورًا لتفادي وميض عند فتح تبويب جديد
+      (function () {
+        try {
+          var t = localStorage.getItem("qiyasat-theme");
+          var prefers = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+          var dark = t === "dark" || (!t && prefers);
+          if (dark) document.documentElement.classList.add("dark");
+          var l = localStorage.getItem("qiyasat-lang");
+          if (l === "en" || l === "ar") {
+            document.documentElement.lang = l;
+            document.documentElement.dir = l === "ar" ? "rtl" : "ltr";
+          }
+        } catch (e) {}
+      })();
+    </script>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
