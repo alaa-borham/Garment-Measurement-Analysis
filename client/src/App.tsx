@@ -136,7 +136,7 @@ function Header() {
 
   return (
     <header className="border-b border-border bg-sidebar sticky top-0 z-50">
-      <div className="max-w-7xl mx-auto px-4 lg:px-6 py-2 flex items-center justify-between gap-3 flex-wrap">
+      <div className="w-full px-3 sm:px-4 lg:px-6 py-2 flex items-center justify-between gap-3 flex-wrap">
         <Link
           href="/"
           className="flex items-center gap-3 hover-elevate rounded-md px-2 py-1"
@@ -261,7 +261,7 @@ function AppRouter() {
     <div className="min-h-screen bg-background text-foreground">
       <Header />
       <TabsBar />
-      <main className="max-w-7xl mx-auto px-6 py-8">
+      <main className="w-full px-3 sm:px-4 lg:px-6 py-4">
         <Suspense fallback={<PageLoader />}>
           <Switch>
             <Route path="/" component={HomePage} />

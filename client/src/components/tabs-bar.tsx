@@ -54,7 +54,7 @@ export default function TabsBar() {
 
   return (
     <div className="border-b border-border bg-muted/30 sticky top-16 z-40">
-      <div className="max-w-7xl mx-auto px-3 flex items-stretch gap-0.5 overflow-x-auto">
+      <div className="w-full px-3 flex items-stretch gap-0.5 overflow-x-auto">
         <button
           type="button"
           onClick={() => setLocation("/")}
