@@ -152,6 +152,8 @@ export default function AdvancedAnalysisPanel({ datasetId, columns }: AdvancedAn
   // طي/توسيع قسم اختيار الأعمدة (تلقائي عند بدء تحديد الصفوف)
   const [colsCollapsed, setColsCollapsed] = useState<boolean>(false);
   const [colsCollapsedManual, setColsCollapsedManual] = useState<boolean>(false);
+  // طي/توسيع قسم اختيار الصفوف (تلقائي عند الضغط على احسب)
+  const [rowsCollapsed, setRowsCollapsed] = useState<boolean>(false);
 
   // طي تلقائي عند تحديد ≥1 من الأعمدة وبدء التركيز على الصفوف
   // يطوي عند وجود أعمدة مختارة + بدء تحديد الصفوف، ويفتح إذا لم تبقَ أعمدة مختارة
@@ -386,6 +388,7 @@ export default function AdvancedAnalysisPanel({ datasetId, columns }: AdvancedAn
       rowA: a,
       rowB: b,
     });
+    setRowsCollapsed(true);
   };
 
   const runMatrix = () => {
@@ -397,6 +400,7 @@ export default function AdvancedAnalysisPanel({ datasetId, columns }: AdvancedAn
       cols: columns.filter((c) => selectedCols.has(c)),
       matrixRef,
     });
+    setRowsCollapsed(true);
   };
 
   const runSequential = () => {
@@ -407,6 +411,7 @@ export default function AdvancedAnalysisPanel({ datasetId, columns }: AdvancedAn
       rows,
       cols: columns.filter((c) => selectedCols.has(c)),
     });
+    setRowsCollapsed(true);
   };
 
   if (rowsQuery.isLoading) {
@@ -561,6 +566,9 @@ export default function AdvancedAnalysisPanel({ datasetId, columns }: AdvancedAn
               clear={clearRows}
               rowLabel={rowLabel}
               L={L}
+              isAr={isAr}
+              collapsed={rowsCollapsed}
+              onToggleCollapse={() => setRowsCollapsed((v) => !v)}
             />
             <Button
               onClick={runMatrix}
@@ -612,6 +620,9 @@ export default function AdvancedAnalysisPanel({ datasetId, columns }: AdvancedAn
               clear={clearRows}
               rowLabel={rowLabel}
               L={L}
+              isAr={isAr}
+              collapsed={rowsCollapsed}
+              onToggleCollapse={() => setRowsCollapsed((v) => !v)}
             />
             <Button
               onClick={runSequential}
@@ -655,6 +666,9 @@ function RowSelector({
   clear,
   rowLabel,
   L,
+  isAr,
+  collapsed,
+  onToggleCollapse,
 }: {
   rows: Row[];
   selected: Set<number>;
@@ -663,6 +677,9 @@ function RowSelector({
   clear: () => void;
   rowLabel: (r: Row) => string;
   L: any;
+  isAr?: boolean;
+  collapsed?: boolean;
+  onToggleCollapse?: () => void;
 }) {
   const [search, setSearch] = useState("");
   const [visibleCount, setVisibleCount] = useState(500);
@@ -682,30 +699,68 @@ function RowSelector({
     });
   };
 
+  const selectedRowsList = rows.filter((r) => selected.has(r.id));
+
   return (
     <div className="rounded-md border bg-muted/30 p-3 space-y-2">
       <div className="flex items-center justify-between flex-wrap gap-2">
-        <Label className="text-xs font-semibold flex items-center gap-1">
+        <button
+          type="button"
+          onClick={onToggleCollapse}
+          className="flex items-center gap-1 text-xs font-semibold hover:opacity-80"
+          data-testid="toggle-rows-collapse"
+        >
+          {collapsed ? (
+            <ChevronDown className="w-3.5 h-3.5" />
+          ) : (
+            <ChevronUp className="w-3.5 h-3.5" />
+          )}
           <Rows3 className="w-3.5 h-3.5" />
           {L.selectRows} ({selected.size}/{rows.length})
-        </Label>
-        <div className="flex gap-1">
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={search.trim() ? selectAllFiltered : selectAll}
-            className="h-7 text-xs"
-            title={search.trim() ? (L.selectAllFiltered || L.selectAll) : L.selectAll}
-          >
-            <CheckSquare className="w-3.5 h-3.5 me-1" />
-            {search.trim() ? (L.selectAllFiltered || L.selectAll) : L.selectAll}
-          </Button>
-          <Button variant="ghost" size="sm" onClick={clear} className="h-7 text-xs">
-            <Square className="w-3.5 h-3.5 me-1" />
-            {L.clear}
-          </Button>
-        </div>
+        </button>
+        {!collapsed && (
+          <div className="flex gap-1">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={search.trim() ? selectAllFiltered : selectAll}
+              className="h-7 text-xs"
+              title={search.trim() ? (L.selectAllFiltered || L.selectAll) : L.selectAll}
+            >
+              <CheckSquare className="w-3.5 h-3.5 me-1" />
+              {search.trim() ? (L.selectAllFiltered || L.selectAll) : L.selectAll}
+            </Button>
+            <Button variant="ghost" size="sm" onClick={clear} className="h-7 text-xs">
+              <Square className="w-3.5 h-3.5 me-1" />
+              {L.clear}
+            </Button>
+          </div>
+        )}
       </div>
+      {collapsed ? (
+        <div className="flex flex-wrap gap-1">
+          {selectedRowsList.slice(0, 12).map((r) => (
+            <span
+              key={r.id}
+              className="text-[11px] px-2 py-0.5 rounded bg-primary/10 text-primary border border-primary/20 truncate max-w-[140px]"
+              title={rowLabel(r)}
+            >
+              {rowLabel(r)}
+            </span>
+          ))}
+          {selectedRowsList.length > 12 && (
+            <span className="text-[11px] px-2 py-0.5 rounded bg-muted text-muted-foreground">
+              +{selectedRowsList.length - 12}
+            </span>
+          )}
+          {selectedRowsList.length === 0 && (
+            <span className="text-[11px] text-muted-foreground">
+              {isAr ? "لم يتم اختيار صفوف" : "No rows selected"}
+            </span>
+          )}
+        </div>
+      ) : (
+        <>
       <Input
         placeholder={L.searchRows || "ابحث عن صف..."}
         value={search}
@@ -740,6 +795,8 @@ function RowSelector({
             {L.showMore || "عرض 500 إضافي"}
           </Button>
         </div>
+      )}
+        </>
       )}
     </div>
   );
