@@ -47,7 +47,7 @@ function AuditNavLink() {
   return (
     <Link
       href="/admin/audit"
-      className={`px-3 py-2 rounded-md text-sm hover-elevate flex items-center gap-1 ${
+      className={`px-2 py-1.5 rounded-md text-sm hover-elevate whitespace-nowrap flex items-center gap-1 ${
         location === "/admin/audit" ? "bg-accent text-accent-foreground" : ""
       }`}
     >
@@ -65,7 +65,7 @@ function AdminNavLink() {
   return (
     <Link
       href="/admin/users"
-      className={`px-3 py-2 rounded-md text-sm hover-elevate flex items-center gap-1 ${
+      className={`px-2 py-1.5 rounded-md text-sm hover-elevate whitespace-nowrap flex items-center gap-1 ${
         location === "/admin/users" ? "bg-accent text-accent-foreground" : ""
       }`}
       data-testid="link-admin-users"
@@ -85,7 +85,7 @@ function GroupsNavLink() {
   return (
     <Link
       href="/admin/groups"
-      className={`px-3 py-2 rounded-md text-sm hover-elevate flex items-center gap-1 ${
+      className={`px-2 py-1.5 rounded-md text-sm hover-elevate whitespace-nowrap flex items-center gap-1 ${
         location === "/admin/groups" ? "bg-accent text-accent-foreground" : ""
       }`}
     >
@@ -104,7 +104,7 @@ function BackupNavLink() {
   return (
     <Link
       href="/admin/backup"
-      className={`px-3 py-2 rounded-md text-sm hover-elevate flex items-center gap-1 ${
+      className={`px-2 py-1.5 rounded-md text-sm hover-elevate whitespace-nowrap flex items-center gap-1 ${
         location === "/admin/backup" ? "bg-accent text-accent-foreground" : ""
       }`}
     >
@@ -135,7 +135,7 @@ function Header() {
 
   return (
     <header className="border-b border-border bg-sidebar sticky top-0 z-50">
-      <div className="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between gap-4">
+      <div className="max-w-7xl mx-auto px-4 lg:px-6 py-2 flex items-center justify-between gap-3 flex-wrap">
         <Link
           href="/"
           className="flex items-center gap-3 hover-elevate rounded-md px-2 py-1"
@@ -149,10 +149,10 @@ function Header() {
             <div className="text-xs text-muted-foreground hidden sm:block">{t.appTagline}</div>
           </div>
         </Link>
-        <nav className="flex items-center gap-1 flex-wrap">
+        <nav className="flex items-center gap-0.5 flex-wrap order-3 w-full lg:w-auto lg:order-2 overflow-x-auto">
           <Link
             href="/"
-            className={`px-3 py-2 rounded-md text-sm hover-elevate ${
+            className={`px-2 py-1.5 rounded-md text-sm hover-elevate whitespace-nowrap ${
               location === "/" ? "bg-accent text-accent-foreground" : ""
             }`}
             data-testid="link-datasets"
@@ -161,7 +161,7 @@ function Header() {
           </Link>
           <Link
             href="/upload"
-            className={`px-3 py-2 rounded-md text-sm hover-elevate ${
+            className={`px-2 py-1.5 rounded-md text-sm hover-elevate whitespace-nowrap ${
               location === "/upload" ? "bg-accent text-accent-foreground" : ""
             }`}
             data-testid="link-upload"
@@ -170,7 +170,7 @@ function Header() {
           </Link>
           <Link
             href="/templates"
-            className={`px-3 py-2 rounded-md text-sm hover-elevate flex items-center gap-1 ${
+            className={`px-2 py-1.5 rounded-md text-sm hover-elevate whitespace-nowrap flex items-center gap-1 ${
               location === "/templates" ? "bg-accent text-accent-foreground" : ""
             }`}
           >
@@ -179,7 +179,7 @@ function Header() {
           </Link>
           <Link
             href="/compare"
-            className={`px-3 py-2 rounded-md text-sm hover-elevate flex items-center gap-1 ${
+            className={`px-2 py-1.5 rounded-md text-sm hover-elevate whitespace-nowrap flex items-center gap-1 ${
               location === "/compare" ? "bg-accent text-accent-foreground" : ""
             }`}
           >
@@ -191,7 +191,7 @@ function Header() {
           <BackupNavLink />
           <AuditNavLink />
         </nav>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1 order-2 lg:order-3">
           <Button
             variant="ghost"
             size="sm"
