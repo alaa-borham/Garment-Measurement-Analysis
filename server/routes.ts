@@ -534,6 +534,99 @@ export async function registerRoutes(
     }
   });
 
+  // ===== إحصائيات لوحة التحكم =====
+  app.get("/api/dashboard/stats", requireAuth, (req: any, res) => {
+    try {
+      const userId = req.userId as number | undefined;
+      const userRole = req.userRole as string | undefined;
+      const isAdmin = userRole === "admin";
+      const useAuth = process.env.LOCAL_AUTH === "1";
+
+      // فلترة الديتاست حسب الصلاحية
+      let allowedIds: number[] | null = null;
+      if (useAuth && !isAdmin && userId) {
+        allowedIds = getAccessibleDatasetIds(userId, userRole);
+      }
+
+      const where = allowedIds
+        ? `WHERE id IN (${allowedIds.length ? allowedIds.join(",") : "-1"})`
+        : "";
+      const whereRows = allowedIds
+        ? `WHERE dataset_id IN (${allowedIds.length ? allowedIds.join(",") : "-1"})`
+        : "";
+
+      const Database = require("better-sqlite3");
+      const sqlite = new Database("data.db", { readonly: true });
+      try {
+        const totalDatasets = (sqlite
+          .prepare(`SELECT COUNT(*) as c FROM datasets ${where}`)
+          .get() as { c: number }).c;
+        const totalRows = (sqlite
+          .prepare(`SELECT COALESCE(SUM(row_count),0) as c FROM datasets ${where}`)
+          .get() as { c: number }).c;
+        const recentDatasets = sqlite
+          .prepare(
+            `SELECT id, name, file_name, row_count, created_at
+             FROM datasets ${where}
+             ORDER BY created_at DESC LIMIT 5`
+          )
+          .all();
+
+        // توزيع زمني: عدد الرفوعات في آخر 12 أسبوع
+        const uploadsTimeline = sqlite
+          .prepare(
+            `SELECT strftime('%Y-%W', created_at) as period, COUNT(*) as count, COALESCE(SUM(row_count),0) as rows
+             FROM datasets ${where}
+             WHERE created_at >= datetime('now', '-84 days')
+             GROUP BY period ORDER BY period ASC`
+          )
+          .all();
+
+        // أكبر الملفات حسب عدد الصفوف
+        const topByRows = sqlite
+          .prepare(
+            `SELECT id, name, row_count
+             FROM datasets ${where}
+             ORDER BY row_count DESC LIMIT 5`
+          )
+          .all();
+
+        // إحصائيات الأدمن فقط
+        let adminStats: any = null;
+        if (isAdmin && useAuth) {
+          try {
+            const usersCount = (sqlite
+              .prepare(`SELECT COUNT(*) as c FROM users`)
+              .get() as { c: number }).c;
+            adminStats = { totalUsers: usersCount };
+          } catch {
+            adminStats = { totalUsers: 0 };
+          }
+        }
+
+        res.json({
+          totalDatasets,
+          totalRows,
+          totalUploadsThisMonth: (sqlite
+            .prepare(
+              `SELECT COUNT(*) as c FROM datasets ${where}
+               ${where ? "AND" : "WHERE"} created_at >= datetime('now','start of month')`
+            )
+            .get() as { c: number }).c,
+          recentDatasets,
+          uploadsTimeline,
+          topByRows,
+          adminStats,
+        });
+      } finally {
+        sqlite.close();
+      }
+    } catch (e: any) {
+      console.error("dashboard stats error:", e);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   // ===== نسخة احتياطية لقاعدة البيانات (محمية بتوكن) =====
   // تحميل ملف data.db كاملاً. يتطلب Authorization: Bearer <BACKUP_TOKEN>
   // يُستخدم من المهمة المجدولة الأسبوعية.

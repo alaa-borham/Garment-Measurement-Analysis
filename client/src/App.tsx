@@ -10,6 +10,7 @@ import { Sun, Moon, Languages, Ruler, Loader2 } from "lucide-react";
 import { LangContext, translations, type Lang } from "@/lib/i18n";
 import NotFound from "@/pages/not-found";
 import HomePage from "@/pages/home";
+import DashboardPage from "@/pages/dashboard";
 import UploadPage from "@/pages/upload";
 import DatasetsWorkspace from "@/components/datasets-workspace";
 import TabsBar from "@/components/tabs-bar";
@@ -165,6 +166,15 @@ function Header() {
             className={`px-2 py-1.5 rounded-md text-sm hover-elevate whitespace-nowrap ${
               location === "/" ? "bg-accent text-accent-foreground" : ""
             }`}
+            data-testid="link-dashboard"
+          >
+            {lang === "ar" ? "الرئيسية" : "Home"}
+          </Link>
+          <Link
+            href="/datasets"
+            className={`px-2 py-1.5 rounded-md text-sm hover-elevate whitespace-nowrap ${
+              location === "/datasets" ? "bg-accent text-accent-foreground" : ""
+            }`}
             data-testid="link-datasets"
           >
             {t.nav.datasets}
@@ -286,7 +296,8 @@ function AppRouter() {
       <main className="w-full px-3 sm:px-4 lg:px-6 py-4">
         <Suspense fallback={<PageLoader />}>
           <Switch>
-            <Route path="/" component={HomePage} />
+            <Route path="/" component={DashboardPage} />
+            <Route path="/datasets" component={HomePage} />
             <Route path="/upload" component={UploadPage} />
             <Route path="/datasets/:id" component={DatasetsWorkspace} />
             <Route path="/admin/users" component={AdminUsersPage} />
