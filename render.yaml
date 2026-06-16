@@ -2,7 +2,7 @@ services:
   - type: web
     name: qiyasat
     runtime: node
-    plan: free
+    plan: starter
     region: frankfurt
     branch: main
     buildCommand: npm install
