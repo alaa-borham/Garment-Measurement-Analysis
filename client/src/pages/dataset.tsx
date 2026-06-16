@@ -514,39 +514,46 @@ export default function DatasetPage({ idProp }: { idProp?: number } = {}) {
   const PrevIcon = lang === "ar" ? ChevronRight : ChevronLeft;
   const NextIcon = lang === "ar" ? ChevronLeft : ChevronRight;
 
+  // وضع embed: يخفي header لتضمين الصفحة في iframe (لصفحة المقارنة)
+  const isEmbed =
+    typeof window !== "undefined" &&
+    new URLSearchParams(window.location.search).get("embed") === "1";
+
   return (
     <div>
-      <div className="mb-3">
-        <div className="flex items-center justify-between gap-3 flex-wrap">
-          <div className="flex items-center gap-2 min-w-0">
-            <Link
-              href="/"
-              className="text-muted-foreground hover-elevate inline-flex items-center gap-1 px-2 py-1 rounded-md shrink-0"
-              data-testid="link-back"
-              title={t.common.back}
-            >
-              <BackIcon className="w-4 h-4" />
-            </Link>
-            <h1
-              className="text-base font-semibold truncate"
-              data-testid="text-dataset-name"
-              title={dataset.name}
-            >
-              {dataset.name}
-            </h1>
-            <Badge variant="secondary" className="text-[10px] shrink-0" data-testid="badge-total-rows">
-              {dataset.rowCount.toLocaleString(lang === "ar" ? "ar-EG" : "en-US")} {t.common.rows}
-            </Badge>
-            <Badge variant="outline" className="text-[10px] shrink-0">
-              {dataset.columns.length} {t.common.columns}
-            </Badge>
+      {!isEmbed && (
+        <div className="mb-3">
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <div className="flex items-center gap-2 min-w-0">
+              <Link
+                href="/"
+                className="text-muted-foreground hover-elevate inline-flex items-center gap-1 px-2 py-1 rounded-md shrink-0"
+                data-testid="link-back"
+                title={t.common.back}
+              >
+                <BackIcon className="w-4 h-4" />
+              </Link>
+              <h1
+                className="text-base font-semibold truncate"
+                data-testid="text-dataset-name"
+                title={dataset.name}
+              >
+                {dataset.name}
+              </h1>
+              <Badge variant="secondary" className="text-[10px] shrink-0" data-testid="badge-total-rows">
+                {dataset.rowCount.toLocaleString(lang === "ar" ? "ar-EG" : "en-US")} {t.common.rows}
+              </Badge>
+              <Badge variant="outline" className="text-[10px] shrink-0">
+                {dataset.columns.length} {t.common.columns}
+              </Badge>
+            </div>
+            <Button variant="outline" size="sm" onClick={handleExport} data-testid="button-export">
+              <Download className="w-4 h-4 me-2" />
+              {t.common.export}
+            </Button>
           </div>
-          <Button variant="outline" size="sm" onClick={handleExport} data-testid="button-export">
-            <Download className="w-4 h-4 me-2" />
-            {t.common.export}
-          </Button>
         </div>
-      </div>
+      )}
 
       <Tabs value={activeTab} onValueChange={setActiveTab}>
         <div className="flex items-center justify-between gap-2 flex-wrap">

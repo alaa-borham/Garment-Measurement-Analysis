@@ -229,6 +229,24 @@ function AppRouter() {
       </Suspense>
     );
   }
+  // وضع embed للتضمين في iframe — بدون Header/TabsBar
+  const isEmbed =
+    typeof window !== "undefined" &&
+    new URLSearchParams(window.location.search).get("embed") === "1";
+  if (isEmbed) {
+    return (
+      <div className="min-h-screen bg-background text-foreground">
+        <main className="px-3 py-3">
+          <Suspense fallback={<PageLoader />}>
+            <Switch>
+              <Route path="/datasets/:id" component={DatasetsWorkspace} />
+              <Route component={NotFound} />
+            </Switch>
+          </Suspense>
+        </main>
+      </div>
+    );
+  }
   return (
     <div className="min-h-screen bg-background text-foreground">
       <Header />
