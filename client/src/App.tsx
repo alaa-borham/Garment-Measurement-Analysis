@@ -15,7 +15,7 @@ import DatasetsWorkspace from "@/components/datasets-workspace";
 import TabsBar from "@/components/tabs-bar";
 import { OpenTabsProvider } from "@/lib/open-tabs";
 import { AuthGate, LogoutButton, useAuth } from "@/components/auth-gate";
-import { Users, ScrollText, Database, UsersRound } from "lucide-react";
+import { Users, ScrollText, Database, UsersRound, FileText, GitCompare } from "lucide-react";
 import { UpdateBadge } from "@/components/update-badge";
 import { NotificationsBell } from "@/components/notifications-bell";
 
@@ -26,6 +26,8 @@ const AuditLogPage = lazy(() => import("@/pages/audit-log"));
 const AdminGroupsPage = lazy(() => import("@/pages/admin-groups"));
 const AdminBackupPage = lazy(() => import("@/pages/admin-backup"));
 const ForgotPasswordPage = lazy(() => import("@/pages/forgot-password"));
+const TemplatesPage = lazy(() => import("@/pages/templates"));
+const CompareDatasetsPage = lazy(() => import("@/pages/compare-datasets"));
 
 function PageLoader() {
   return (
@@ -166,6 +168,24 @@ function Header() {
           >
             {t.nav.upload}
           </Link>
+          <Link
+            href="/templates"
+            className={`px-3 py-2 rounded-md text-sm hover-elevate flex items-center gap-1 ${
+              location === "/templates" ? "bg-accent text-accent-foreground" : ""
+            }`}
+          >
+            <FileText className="w-4 h-4" />
+            {lang === "ar" ? "قوالب" : "Templates"}
+          </Link>
+          <Link
+            href="/compare"
+            className={`px-3 py-2 rounded-md text-sm hover-elevate flex items-center gap-1 ${
+              location === "/compare" ? "bg-accent text-accent-foreground" : ""
+            }`}
+          >
+            <GitCompare className="w-4 h-4" />
+            {lang === "ar" ? "مقارنة" : "Compare"}
+          </Link>
           <AdminNavLink />
           <GroupsNavLink />
           <BackupNavLink />
@@ -223,6 +243,8 @@ function AppRouter() {
             <Route path="/admin/audit" component={AuditLogPage} />
             <Route path="/admin/groups" component={AdminGroupsPage} />
             <Route path="/admin/backup" component={AdminBackupPage} />
+            <Route path="/templates" component={TemplatesPage} />
+            <Route path="/compare" component={CompareDatasetsPage} />
             <Route component={NotFound} />
           </Switch>
         </Suspense>
