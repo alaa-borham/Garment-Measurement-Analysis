@@ -6,11 +6,12 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
-import { Sun, Moon, Languages, Ruler, Loader2 } from "lucide-react";
+import { Sun, Moon, Languages, Ruler, Loader2, Search } from "lucide-react";
 import { LangContext, translations, type Lang } from "@/lib/i18n";
 import NotFound from "@/pages/not-found";
 import HomePage from "@/pages/home";
 import DashboardPage from "@/pages/dashboard";
+import { CommandPalette } from "@/components/command-palette";
 import UploadPage from "@/pages/upload";
 import DatasetsWorkspace from "@/components/datasets-workspace";
 import TabsBar from "@/components/tabs-bar";
@@ -116,7 +117,7 @@ function BackupNavLink() {
   );
 }
 
-function Header() {
+function Header({ onOpenCommandPalette }: { onOpenCommandPalette?: () => void }) {
   const [location] = useLocation();
   const { lang, setLang, t } = useContext(LangContext);
   const { user } = useAuth();
@@ -238,6 +239,19 @@ function Header() {
             <Languages className="w-4 h-4 me-1" />
             {t.common.language}
           </Button>
+          {onOpenCommandPalette && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={onOpenCommandPalette}
+              data-testid="button-cmd-palette"
+              className="gap-1.5 hidden md:inline-flex h-9 px-2"
+              title={lang === "ar" ? "بحث (Ctrl+K)" : "Search (Ctrl+K)"}
+            >
+              <Search className="w-3.5 h-3.5" />
+              <kbd className="text-[10px] px-1 py-0.5 rounded border bg-muted font-mono">⌘K</kbd>
+            </Button>
+          )}
           <Button
             variant="ghost"
             size="icon"
@@ -257,7 +271,7 @@ function Header() {
 }
 
 function AppRouter() {
-  const [location] = useLocation();
+  const [location, setLocation] = useLocation();
   // صفحة عرض التحليل المستقلة — تخطيط مستقل بدون Header العام
   if (location.startsWith("/analysis-view")) {
     return (
@@ -289,9 +303,47 @@ function AppRouter() {
       </div>
     );
   }
+  // Command Palette + اختصارات لوحة المفاتيح
+  const [cmdOpen, setCmdOpen] = useState(false);
+  const [showShortcuts, setShowShortcuts] = useState(false);
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement;
+      const inField =
+        target &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.isContentEditable);
+      // Ctrl/Cmd + K — دائماً حتى داخل الحقول
+      if ((e.ctrlKey || e.metaKey) && (e.key === "k" || e.key === "K")) {
+        e.preventDefault();
+        setCmdOpen((v) => !v);
+        return;
+      }
+      if (inField) return;
+      // اختصارات بحرف واحد
+      if (e.key === "?") {
+        e.preventDefault();
+        setShowShortcuts(true);
+      } else if (e.key === "u" || e.key === "U") {
+        setLocation("/upload");
+      } else if (e.key === "c" || e.key === "C") {
+        setLocation("/compare");
+      } else if (e.key === "t" || e.key === "T") {
+        setLocation("/templates");
+      } else if (e.key === "h" || e.key === "H") {
+        setLocation("/");
+      } else if (e.key === "f" || e.key === "F") {
+        setLocation("/datasets");
+      }
+    };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, []);
+
   return (
     <div className="min-h-screen bg-background text-foreground">
-      <Header />
+      <Header onOpenCommandPalette={() => setCmdOpen(true)} />
       <TabsBar />
       <main className="w-full px-3 sm:px-4 lg:px-6 py-4">
         <Suspense fallback={<PageLoader />}>
@@ -311,6 +363,53 @@ function AppRouter() {
           </Switch>
         </Suspense>
       </main>
+      <CommandPalette open={cmdOpen} onOpenChange={setCmdOpen} />
+      <ShortcutsDialog open={showShortcuts} onOpenChange={setShowShortcuts} />
+    </div>
+  );
+}
+
+function ShortcutsDialog({
+  open,
+  onOpenChange,
+}: {
+  open: boolean;
+  onOpenChange: (o: boolean) => void;
+}) {
+  const { lang } = useContext(LangContext);
+  const isAr = lang === "ar";
+  if (!open) return null;
+  const items = [
+    { key: "Ctrl+K", desc: isAr ? "بحث عام / أوامر" : "Command Palette" },
+    { key: "H", desc: isAr ? "الرئيسية" : "Home" },
+    { key: "F", desc: isAr ? "الملفات" : "Files" },
+    { key: "U", desc: isAr ? "رفع ملف" : "Upload" },
+    { key: "C", desc: isAr ? "مقارنة" : "Compare" },
+    { key: "T", desc: isAr ? "القوالب" : "Templates" },
+    { key: "?", desc: isAr ? "عرض هذه القائمة" : "Show this menu" },
+    { key: "Esc", desc: isAr ? "إغلاق النوافذ" : "Close dialogs" },
+  ];
+  return (
+    <div
+      className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/50"
+      onClick={() => onOpenChange(false)}
+    >
+      <div
+        className="bg-background border rounded-lg shadow-lg p-4 w-full max-w-sm"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h3 className="font-semibold text-sm mb-3">
+          {isAr ? "اختصارات لوحة المفاتيح" : "Keyboard shortcuts"}
+        </h3>
+        <div className="space-y-1.5">
+          {items.map((it) => (
+            <div key={it.key} className="flex justify-between items-center text-sm">
+              <span className="text-muted-foreground">{it.desc}</span>
+              <kbd className="px-2 py-0.5 rounded border bg-muted text-xs font-mono">{it.key}</kbd>
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }
