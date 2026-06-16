@@ -768,6 +768,86 @@ export default function AdminUsersPage() {
                 </span>
               </div>
 
+              {/* افتراضات سريعة */}
+              <div className="flex items-center gap-2 flex-wrap p-2 rounded-md bg-muted/40 border">
+                <span className="text-xs text-muted-foreground">
+                  {isAr ? "افتراضات سريعة:" : "Quick presets:"}
+                </span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 text-xs"
+                  onClick={() => {
+                    const next: Record<string, boolean> = {};
+                    permsList.forEach((f) => { next[f] = false; });
+                    ["explore", "analyze"].forEach((f) => {
+                      if (permsList.includes(f)) next[f] = true;
+                    });
+                    setPermsValues(next);
+                  }}
+                  data-testid="preset-viewer"
+                >
+                  {isAr ? "قارئ فقط" : "Viewer only"}
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 text-xs"
+                  onClick={() => {
+                    const next: Record<string, boolean> = {};
+                    permsList.forEach((f) => { next[f] = false; });
+                    ["explore", "analyze", "pivot", "chart", "compare", "compare_files", "multi_analysis", "templates", "export", "comments"].forEach((f) => {
+                      if (permsList.includes(f)) next[f] = true;
+                    });
+                    setPermsValues(next);
+                  }}
+                  data-testid="preset-analyst"
+                >
+                  {isAr ? "محلّل" : "Analyst"}
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 text-xs"
+                  onClick={() => {
+                    const next: Record<string, boolean> = {};
+                    permsList.forEach((f) => {
+                      next[f] = !["delete_dataset", "share_dataset"].includes(f);
+                    });
+                    setPermsValues(next);
+                  }}
+                  data-testid="preset-editor"
+                >
+                  {isAr ? "محرر" : "Editor"}
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 text-xs"
+                  onClick={() => {
+                    const next: Record<string, boolean> = {};
+                    permsList.forEach((f) => { next[f] = true; });
+                    setPermsValues(next);
+                  }}
+                  data-testid="preset-all"
+                >
+                  {isAr ? "تفعيل الكل" : "Enable all"}
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 text-xs"
+                  onClick={() => {
+                    const next: Record<string, boolean> = {};
+                    permsList.forEach((f) => { next[f] = false; });
+                    setPermsValues(next);
+                  }}
+                  data-testid="preset-none"
+                >
+                  {isAr ? "إيقاف الكل" : "Disable all"}
+                </Button>
+              </div>
+
               {(["data", "view", "admin"] as const).map((group) => {
                 const feats = permsList.filter(
                   (f) => FEATURE_LABELS[f]?.group === group,
