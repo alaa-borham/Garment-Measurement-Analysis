@@ -44,9 +44,14 @@ const AR_ACTIONS: Record<string, string> = {
   share_granted: "منح صلاحية",
 };
 
-function fmt(ts: number, isAr: boolean) {
+function fmt(ts: any, isAr: boolean) {
+  if (!ts) return "—";
   try {
-    return new Date(ts).toLocaleString(isAr ? "ar-SA" : "en-US", {
+    const n = Number(ts);
+    if (!isFinite(n) || n <= 0) return String(ts);
+    // دعم الثواني والميلليثواني
+    const ms = n < 1e12 ? n * 1000 : n;
+    return new Date(ms).toLocaleString(isAr ? "ar-SA" : "en-US", {
       year: "numeric",
       month: "short",
       day: "numeric",
@@ -55,27 +60,37 @@ function fmt(ts: number, isAr: boolean) {
       second: "2-digit",
     });
   } catch {
-    return "";
+    return String(ts);
   }
 }
 
 export default function AuditLogPage() {
-  const { user } = useAuth();
+  const auth = useAuth();
+  const user = auth?.user;
   const { lang } = useContext(LangContext);
   const isAr = lang === "ar";
   const [entries, setEntries] = useState<AuditEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState("");
+  const [error, setError] = useState<string | null>(null);
 
   const load = async () => {
     setLoading(true);
+    setError(null);
     try {
       const r = await fetch("/api/audit-log?limit=500");
-      if (r.ok) {
+      if (!r.ok) {
+        const txt = await r.text().catch(() => "");
+        setError(`HTTP ${r.status}: ${txt || r.statusText}`);
+        setEntries([]);
+      } else {
         const d = await r.json();
-        setEntries(d.entries || []);
+        setEntries(Array.isArray(d?.entries) ? d.entries : []);
       }
-    } catch {}
+    } catch (e: any) {
+      setError(e?.message || "network error");
+      setEntries([]);
+    }
     setLoading(false);
   };
 
@@ -85,7 +100,7 @@ export default function AuditLogPage() {
 
   if (user && user.role !== "admin") {
     return (
-      <div dir={isAr ? "rtl" : "ltr"} className="min-h-screen p-6 flex items-center justify-center">
+      <div dir={isAr ? "rtl" : "ltr"} className="p-6 flex items-center justify-center">
         <Card className="max-w-md">
           <CardContent className="p-8 text-center">
             <ShieldAlert className="w-12 h-12 text-destructive mx-auto mb-4" />
@@ -111,7 +126,7 @@ export default function AuditLogPage() {
   });
 
   return (
-    <div dir={isAr ? "rtl" : "ltr"} className="min-h-screen bg-background p-4 md:p-6">
+    <div dir={isAr ? "rtl" : "ltr"} className="">
       <div className="max-w-6xl mx-auto space-y-4">
         <div className="flex items-center justify-between flex-wrap gap-3">
           <div className="flex items-center gap-2">
@@ -127,6 +142,14 @@ export default function AuditLogPage() {
             {isAr ? "تحديث" : "Refresh"}
           </Button>
         </div>
+
+        {error && (
+          <Card className="border-destructive/50 bg-destructive/5">
+            <CardContent className="p-3 text-sm text-destructive">
+              {isAr ? "خطأ: " : "Error: "}{error}
+            </CardContent>
+          </Card>
+        )}
 
         <Card>
           <CardHeader className="pb-3">
@@ -165,21 +188,24 @@ export default function AuditLogPage() {
                       </td>
                     </tr>
                   ) : (
-                    filtered.map((e) => (
-                      <tr key={e.id} className="border-t hover:bg-accent/30">
-                        <td className="p-3 whitespace-nowrap text-xs text-muted-foreground">{fmt(e.created_at, isAr)}</td>
-                        <td className="p-3 font-medium">{e.username || "—"}</td>
-                        <td className="p-3">
-                          <Badge variant="outline" className={ACTION_COLORS[e.action] || "bg-muted"}>
-                            {isAr ? (AR_ACTIONS[e.action] || e.action) : e.action}
-                          </Badge>
-                        </td>
-                        <td className="p-3 text-xs">
-                          {e.target_type ? `${e.target_type}${e.target_id ? `: ${e.target_id}` : ""}` : "—"}
-                        </td>
-                        <td className="p-3 text-xs font-mono text-muted-foreground">{e.ip || "—"}</td>
-                      </tr>
-                    ))
+                    filtered.map((e) => {
+                      const action = String(e?.action || "");
+                      return (
+                        <tr key={e?.id ?? Math.random()} className="border-t hover:bg-accent/30">
+                          <td className="p-3 whitespace-nowrap text-xs text-muted-foreground">{fmt(e?.created_at, isAr)}</td>
+                          <td className="p-3 font-medium">{e?.username || "—"}</td>
+                          <td className="p-3">
+                            <Badge variant="outline" className={ACTION_COLORS[action] || "bg-muted"}>
+                              {isAr ? (AR_ACTIONS[action] || action) : action}
+                            </Badge>
+                          </td>
+                          <td className="p-3 text-xs">
+                            {e?.target_type ? `${e.target_type}${e.target_id ? `: ${e.target_id}` : ""}` : "—"}
+                          </td>
+                          <td className="p-3 text-xs font-mono text-muted-foreground">{e?.ip || "—"}</td>
+                        </tr>
+                      );
+                    })
                   )}
                 </tbody>
               </table>
