@@ -1,4 +1,4 @@
-import { useContext, useEffect, useState } from "react";
+import { useContext, useEffect, useState, lazy, Suspense } from "react";
 import { Switch, Route, Router, Link, useLocation } from "wouter";
 import { useHashLocation } from "wouter/use-hash-location";
 import { queryClient } from "./lib/queryClient";
@@ -6,24 +6,36 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
-import { Sun, Moon, Languages, Ruler } from "lucide-react";
-// Users icon تم إضافتها أعلاه في import lucide-react الرئيسي
+import { Sun, Moon, Languages, Ruler, Loader2 } from "lucide-react";
 import { LangContext, translations, type Lang } from "@/lib/i18n";
 import NotFound from "@/pages/not-found";
 import HomePage from "@/pages/home";
 import UploadPage from "@/pages/upload";
-import AnalysisViewPage from "@/pages/analysis-view";
-import AdminUsersPage from "@/pages/admin-users";
-import AuditLogPage from "@/pages/audit-log";
 import DatasetsWorkspace from "@/components/datasets-workspace";
 import TabsBar from "@/components/tabs-bar";
 import { OpenTabsProvider } from "@/lib/open-tabs";
 import { AuthGate, LogoutButton, useAuth } from "@/components/auth-gate";
-import { Users, ScrollText } from "lucide-react";
+import { Users, ScrollText, Database, UsersRound } from "lucide-react";
 import { UpdateBadge } from "@/components/update-badge";
 import { NotificationsBell } from "@/components/notifications-bell";
 
-// رابط سجل العمليات - لـ admin فقط
+// Code-splitting للصفحات الثقيلة
+const AnalysisViewPage = lazy(() => import("@/pages/analysis-view"));
+const AdminUsersPage = lazy(() => import("@/pages/admin-users"));
+const AuditLogPage = lazy(() => import("@/pages/audit-log"));
+const AdminGroupsPage = lazy(() => import("@/pages/admin-groups"));
+const AdminBackupPage = lazy(() => import("@/pages/admin-backup"));
+const ForgotPasswordPage = lazy(() => import("@/pages/forgot-password"));
+
+function PageLoader() {
+  return (
+    <div className="flex items-center justify-center py-20">
+      <Loader2 className="w-8 h-8 animate-spin text-muted-foreground" />
+    </div>
+  );
+}
+
+// روابط Admin: المستخدمين + المجموعات + النسخ + سجل العمليات
 function AuditNavLink() {
   const [location] = useLocation();
   const { user } = useAuth();
@@ -43,7 +55,6 @@ function AuditNavLink() {
   );
 }
 
-// رابط إدارة المستخدمين - يظهر لـ admin فقط
 function AdminNavLink() {
   const [location] = useLocation();
   const { user } = useAuth();
@@ -59,6 +70,44 @@ function AdminNavLink() {
     >
       <Users className="w-4 h-4" />
       {t.nav.adminUsers}
+    </Link>
+  );
+}
+
+function GroupsNavLink() {
+  const [location] = useLocation();
+  const { user } = useAuth();
+  const { lang } = useContext(LangContext);
+  const isAr = lang === "ar";
+  if (!user || user.role !== "admin") return null;
+  return (
+    <Link
+      href="/admin/groups"
+      className={`px-3 py-2 rounded-md text-sm hover-elevate flex items-center gap-1 ${
+        location === "/admin/groups" ? "bg-accent text-accent-foreground" : ""
+      }`}
+    >
+      <UsersRound className="w-4 h-4" />
+      {isAr ? "المجموعات" : "Groups"}
+    </Link>
+  );
+}
+
+function BackupNavLink() {
+  const [location] = useLocation();
+  const { user } = useAuth();
+  const { lang } = useContext(LangContext);
+  const isAr = lang === "ar";
+  if (!user || user.role !== "admin") return null;
+  return (
+    <Link
+      href="/admin/backup"
+      className={`px-3 py-2 rounded-md text-sm hover-elevate flex items-center gap-1 ${
+        location === "/admin/backup" ? "bg-accent text-accent-foreground" : ""
+      }`}
+    >
+      <Database className="w-4 h-4" />
+      {isAr ? "النسخ" : "Backup"}
     </Link>
   );
 }
@@ -98,7 +147,7 @@ function Header() {
             <div className="text-xs text-muted-foreground hidden sm:block">{t.appTagline}</div>
           </div>
         </Link>
-        <nav className="flex items-center gap-1">
+        <nav className="flex items-center gap-1 flex-wrap">
           <Link
             href="/"
             className={`px-3 py-2 rounded-md text-sm hover-elevate ${
@@ -118,6 +167,8 @@ function Header() {
             {t.nav.upload}
           </Link>
           <AdminNavLink />
+          <GroupsNavLink />
+          <BackupNavLink />
           <AuditNavLink />
         </nav>
         <div className="flex items-center gap-2">
@@ -152,23 +203,50 @@ function AppRouter() {
   const [location] = useLocation();
   // صفحة عرض التحليل المستقلة — تخطيط مستقل بدون Header العام
   if (location.startsWith("/analysis-view")) {
-    return <AnalysisViewPage />;
+    return (
+      <Suspense fallback={<PageLoader />}>
+        <AnalysisViewPage />
+      </Suspense>
+    );
   }
   return (
     <div className="min-h-screen bg-background text-foreground">
       <Header />
       <TabsBar />
       <main className="max-w-7xl mx-auto px-6 py-8">
-        <Switch>
-          <Route path="/" component={HomePage} />
-          <Route path="/upload" component={UploadPage} />
-          <Route path="/datasets/:id" component={DatasetsWorkspace} />
-          <Route path="/admin/users" component={AdminUsersPage} />
-          <Route path="/admin/audit" component={AuditLogPage} />
-          <Route component={NotFound} />
-        </Switch>
+        <Suspense fallback={<PageLoader />}>
+          <Switch>
+            <Route path="/" component={HomePage} />
+            <Route path="/upload" component={UploadPage} />
+            <Route path="/datasets/:id" component={DatasetsWorkspace} />
+            <Route path="/admin/users" component={AdminUsersPage} />
+            <Route path="/admin/audit" component={AuditLogPage} />
+            <Route path="/admin/groups" component={AdminGroupsPage} />
+            <Route path="/admin/backup" component={AdminBackupPage} />
+            <Route component={NotFound} />
+          </Switch>
+        </Suspense>
       </main>
     </div>
+  );
+}
+
+// AuthGate wrapper مع مسار نسيت كلمة المرور (مستقل عن المصادقة)
+function AppWithRouter() {
+  const [location] = useLocation();
+  if (location === "/forgot-password") {
+    return (
+      <Suspense fallback={<PageLoader />}>
+        <ForgotPasswordPage />
+      </Suspense>
+    );
+  }
+  return (
+    <AuthGate>
+      <OpenTabsProvider>
+        <AppRouter />
+      </OpenTabsProvider>
+    </AuthGate>
   );
 }
 
@@ -180,13 +258,9 @@ function App() {
       <LangContext.Provider value={value}>
         <TooltipProvider>
           <Toaster />
-          <AuthGate>
-            <Router hook={useHashLocation}>
-              <OpenTabsProvider>
-                <AppRouter />
-              </OpenTabsProvider>
-            </Router>
-          </AuthGate>
+          <Router hook={useHashLocation}>
+            <AppWithRouter />
+          </Router>
         </TooltipProvider>
       </LangContext.Provider>
     </QueryClientProvider>

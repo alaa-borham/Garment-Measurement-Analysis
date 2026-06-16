@@ -216,58 +216,94 @@ export function requireAuth(
 }
 
 // التحقق من صلاحية الوصول إلى dataset
+// مستوى الصلاحية: view < edit < delete
+export type Permission = "view" | "edit" | "delete";
+const PERM_LEVEL: Record<Permission, number> = { view: 1, edit: 2, delete: 3 };
+
+// حساب أعلى صلاحية للمستخدم على dataset (مباشرة + عبر مجموعاته)
+export function getUserPermission(
+  datasetId: number,
+  userId: number,
+  userRole: string
+): Permission | null {
+  if (process.env.LOCAL_AUTH !== "1") return "delete";
+  if (userRole === "admin") return "delete";
+  const ds = authDb
+    .prepare("SELECT owner_id FROM datasets WHERE id = ?")
+    .get(datasetId) as { owner_id: number | null } | undefined;
+  if (!ds) return null;
+  if (ds.owner_id === userId) return "delete";
+  // مباشرة
+  let best: Permission | null = null;
+  const direct = authDb
+    .prepare("SELECT permission FROM dataset_access WHERE dataset_id = ? AND user_id = ?")
+    .get(datasetId, userId) as { permission?: string } | undefined;
+  if (direct?.permission) best = (direct.permission as Permission);
+  // عبر مجموعات
+  const groupPerms = authDb
+    .prepare(
+      `SELECT dga.permission FROM dataset_group_access dga
+       JOIN group_members gm ON gm.group_id = dga.group_id
+       WHERE dga.dataset_id = ? AND gm.user_id = ?`
+    )
+    .all(datasetId, userId) as { permission: string }[];
+  for (const g of groupPerms) {
+    const p = g.permission as Permission;
+    if (!best || PERM_LEVEL[p] > PERM_LEVEL[best]) best = p;
+  }
+  return best;
+}
+
 export function canAccessDataset(
   datasetId: number,
   userId: number,
   userRole: string
 ): boolean {
-  // إذا المصادقة معطلة، اسمح بكل شيء
-  if (process.env.LOCAL_AUTH !== "1") return true;
-  
-  // الأدمن يصل لكل شيء
-  if (userRole === "admin") return true;
-  
-  // جلب صاحب الـ dataset
-  const ds = authDb
-    .prepare("SELECT owner_id FROM datasets WHERE id = ?")
-    .get(datasetId) as { owner_id: number | null } | undefined;
-  
-  if (!ds) return false; // dataset غير موجود
-  
-  // المالك له الصلاحية دائماً
-  if (ds.owner_id === userId) return true;
-  
-  // تحقق من جدول المشاركة
-  const access = authDb
-    .prepare(
-      "SELECT 1 FROM dataset_access WHERE dataset_id = ? AND user_id = ?"
-    )
-    .get(datasetId, userId);
-  return !!access;
+  return getUserPermission(datasetId, userId, userRole) !== null;
 }
 
-// جلب قائمة معرفات الـ datasets التي يستطيع المستخدم رؤيتها
+export function canEditDataset(
+  datasetId: number,
+  userId: number,
+  userRole: string
+): boolean {
+  const p = getUserPermission(datasetId, userId, userRole);
+  return p !== null && PERM_LEVEL[p] >= PERM_LEVEL.edit;
+}
+
+export function canDeleteDataset(
+  datasetId: number,
+  userId: number,
+  userRole: string
+): boolean {
+  const p = getUserPermission(datasetId, userId, userRole);
+  return p !== null && PERM_LEVEL[p] >= PERM_LEVEL.delete;
+}
+
+// جلب قائمة معرفات الـ datasets التي يستطيع المستخدم رؤيتها (مباشرة + مجموعات)
 export function getAccessibleDatasetIds(
   userId: number,
   userRole: string
 ): number[] | "all" {
   if (process.env.LOCAL_AUTH !== "1") return "all";
-  
-  // الأدمن يرى كل شيء
-  // (نعم - الأدمن يرى كل البيانات حتى التي رفعها مستخدمون آخرون)
   if (userRole === "admin") return "all";
-  
-  // المستخدم العادي: بياناته + المُشارَكة معه
   const owned = authDb
     .prepare("SELECT id FROM datasets WHERE owner_id = ?")
     .all(userId) as { id: number }[];
   const shared = authDb
     .prepare("SELECT dataset_id FROM dataset_access WHERE user_id = ?")
     .all(userId) as { dataset_id: number }[];
-  
+  const viaGroups = authDb
+    .prepare(
+      `SELECT DISTINCT dga.dataset_id FROM dataset_group_access dga
+       JOIN group_members gm ON gm.group_id = dga.group_id
+       WHERE gm.user_id = ?`
+    )
+    .all(userId) as { dataset_id: number }[];
   const ids = new Set<number>();
   owned.forEach((r) => ids.add(r.id));
   shared.forEach((r) => ids.add(r.dataset_id));
+  viaGroups.forEach((r) => ids.add(r.dataset_id));
   return Array.from(ids);
 }
 
@@ -483,6 +519,209 @@ export function registerAuthRoutes(app: Express) {
     const id = parseInt(req.params.id, 10);
     authDb.prepare("DELETE FROM notifications WHERE id = ? AND user_id = ?").run(id, uid);
     res.json({ ok: true });
+  });
+
+
+  // ═══ المجموعات (Groups) - admin فقط للإدارة ═══
+  app.get("/api/groups", requireAuth, (_req, res) => {
+    const rows = authDb.prepare(`SELECT g.*, (SELECT COUNT(*) FROM group_members WHERE group_id = g.id) as member_count FROM groups g ORDER BY g.name`).all();
+    res.json({ groups: rows });
+  });
+  app.post("/api/groups", requireAuth, (req: any, res) => {
+    const cur = authDb.prepare("SELECT role, username FROM users WHERE id = ?").get(req.userId) as any;
+    if (!cur || cur.role !== "admin") return res.status(403).json({ error: "يتطلب صلاحيات المسؤول" });
+    const { name, description } = req.body || {};
+    if (!name || !name.trim()) return res.status(400).json({ error: "اسم المجموعة مطلوب" });
+    try {
+      const r = authDb.prepare("INSERT INTO groups (name, description, created_by, created_at) VALUES (?, ?, ?, ?)").run(name.trim(), description || null, req.userId, Date.now());
+      logAudit(req.userId, cur.username, "group_created", { targetType: "group", targetId: String(r.lastInsertRowid), details: { name }, ip: getClientIp(req) });
+      res.json({ ok: true, id: r.lastInsertRowid });
+    } catch (e: any) {
+      if (e.message?.includes("UNIQUE")) return res.status(409).json({ error: "الاسم موجود مسبقاً" });
+      res.status(500).json({ error: e.message });
+    }
+  });
+  app.delete("/api/groups/:id", requireAuth, (req: any, res) => {
+    const cur = authDb.prepare("SELECT role, username FROM users WHERE id = ?").get(req.userId) as any;
+    if (!cur || cur.role !== "admin") return res.status(403).json({ error: "يتطلب صلاحيات المسؤول" });
+    const id = parseInt(req.params.id, 10);
+    const g = authDb.prepare("SELECT name FROM groups WHERE id = ?").get(id) as any;
+    const tx = authDb.transaction(() => {
+      authDb.prepare("DELETE FROM group_members WHERE group_id = ?").run(id);
+      authDb.prepare("DELETE FROM dataset_group_access WHERE group_id = ?").run(id);
+      authDb.prepare("DELETE FROM groups WHERE id = ?").run(id);
+    });
+    tx();
+    logAudit(req.userId, cur.username, "group_deleted", { targetType: "group", targetId: String(id), details: { name: g?.name }, ip: getClientIp(req) });
+    res.json({ ok: true });
+  });
+  app.get("/api/groups/:id/members", requireAuth, (req, res) => {
+    const id = parseInt(req.params.id, 10);
+    const rows = authDb.prepare(`SELECT u.id, u.username, u.role, CASE WHEN gm.user_id IS NOT NULL THEN 1 ELSE 0 END as is_member FROM users u LEFT JOIN group_members gm ON gm.user_id = u.id AND gm.group_id = ? ORDER BY u.username`).all(id);
+    res.json({ users: rows });
+  });
+  app.post("/api/groups/:id/members", requireAuth, (req: any, res) => {
+    const cur = authDb.prepare("SELECT role, username FROM users WHERE id = ?").get(req.userId) as any;
+    if (!cur || cur.role !== "admin") return res.status(403).json({ error: "يتطلب صلاحيات المسؤول" });
+    const gid = parseInt(req.params.id, 10);
+    const { userIds } = req.body || {};
+    if (!Array.isArray(userIds)) return res.status(400).json({ error: "userIds مطلوب" });
+    const tx = authDb.transaction(() => {
+      authDb.prepare("DELETE FROM group_members WHERE group_id = ?").run(gid);
+      const ins = authDb.prepare("INSERT OR IGNORE INTO group_members (group_id, user_id, added_at) VALUES (?, ?, ?)");
+      const now = Date.now();
+      for (const u of userIds) { const n = parseInt(u, 10); if (!isNaN(n)) ins.run(gid, n, now); }
+    });
+    tx();
+    logAudit(req.userId, cur.username, "group_members_updated", { targetType: "group", targetId: String(gid), details: { userIds }, ip: getClientIp(req) });
+    res.json({ ok: true });
+  });
+
+  // ═══ صلاحية مجموعة على dataset ═══
+  app.get("/api/datasets/:id/group-access", requireAuth, (req: any, res) => {
+    const id = parseInt(req.params.id, 10);
+    const ds = authDb.prepare("SELECT owner_id FROM datasets WHERE id = ?").get(id) as any;
+    if (!ds) return res.status(404).json({ error: "غير موجود" });
+    if (req.userRole !== "admin" && ds.owner_id !== req.userId) return res.status(403).json({ error: "غير مسموح" });
+    const rows = authDb.prepare(`SELECT g.id, g.name, g.description, dga.permission, (SELECT COUNT(*) FROM group_members WHERE group_id = g.id) as member_count FROM groups g LEFT JOIN dataset_group_access dga ON dga.group_id = g.id AND dga.dataset_id = ? ORDER BY g.name`).all(id);
+    res.json({ groups: rows });
+  });
+  app.post("/api/datasets/:id/group-access", requireAuth, (req: any, res) => {
+    const id = parseInt(req.params.id, 10);
+    const ds = authDb.prepare("SELECT owner_id, name FROM datasets WHERE id = ?").get(id) as any;
+    if (!ds) return res.status(404).json({ error: "غير موجود" });
+    if (req.userRole !== "admin" && ds.owner_id !== req.userId) return res.status(403).json({ error: "غير مسموح" });
+    const { groups } = req.body || {};
+    if (!Array.isArray(groups)) return res.status(400).json({ error: "groups مطلوب" });
+    const tx = authDb.transaction(() => {
+      authDb.prepare("DELETE FROM dataset_group_access WHERE dataset_id = ?").run(id);
+      const ins = authDb.prepare("INSERT INTO dataset_group_access (dataset_id, group_id, permission, granted_at) VALUES (?, ?, ?, ?)");
+      const now = Date.now();
+      for (const g of groups) {
+        const gid = parseInt(g.id, 10);
+        const perm = ["view","edit","delete"].includes(g.permission) ? g.permission : "view";
+        if (!isNaN(gid)) ins.run(id, gid, perm, now);
+      }
+    });
+    tx();
+    try {
+      const u = authDb.prepare("SELECT username FROM users WHERE id = ?").get(req.userId) as any;
+      for (const g of groups) {
+        const members = authDb.prepare("SELECT user_id FROM group_members WHERE group_id = ?").all(parseInt(g.id, 10)) as { user_id: number }[];
+        for (const m of members) {
+          if (m.user_id !== ds.owner_id && m.user_id !== req.userId) {
+            notify(m.user_id, "share", "تمت مشاركة ملف مع مجموعتك", `تمت مشاركة "${ds.name}" مع مجموعتك بواسطة ${u?.username || "النظام"}`, `#/datasets/${id}`);
+          }
+        }
+      }
+      logAudit(req.userId, u?.username || null, "group_access_updated", { targetType: "dataset", targetId: String(id), details: { groups }, ip: getClientIp(req) });
+    } catch {}
+    res.json({ ok: true });
+  });
+
+  // ═══ تحديث صلاحية مستخدم مباشرة ═══
+  app.patch("/api/datasets/:id/access/:userId", requireAuth, (req: any, res) => {
+    const id = parseInt(req.params.id, 10);
+    const targetUserId = parseInt(req.params.userId, 10);
+    const ds = authDb.prepare("SELECT owner_id FROM datasets WHERE id = ?").get(id) as any;
+    if (!ds) return res.status(404).json({ error: "غير موجود" });
+    if (req.userRole !== "admin" && ds.owner_id !== req.userId) return res.status(403).json({ error: "غير مسموح" });
+    const { permission } = req.body || {};
+    if (!["view","edit","delete"].includes(permission)) return res.status(400).json({ error: "مستوى صلاحية غير صحيح" });
+    authDb.prepare("UPDATE dataset_access SET permission = ? WHERE dataset_id = ? AND user_id = ?").run(permission, id, targetUserId);
+    res.json({ ok: true });
+  });
+
+  // ═══ التعليقات على الـ datasets ═══
+  app.get("/api/datasets/:id/comments", requireAuth, (req: any, res) => {
+    const id = parseInt(req.params.id, 10);
+    if (!canAccessDataset(id, req.userId, req.userRole)) return res.status(403).json({ error: "غير مسموح" });
+    const rows = authDb.prepare("SELECT * FROM dataset_comments WHERE dataset_id = ? ORDER BY id DESC LIMIT 200").all(id);
+    res.json({ comments: rows });
+  });
+  app.post("/api/datasets/:id/comments", requireAuth, (req: any, res) => {
+    const id = parseInt(req.params.id, 10);
+    if (!canAccessDataset(id, req.userId, req.userRole)) return res.status(403).json({ error: "غير مسموح" });
+    const { comment } = req.body || {};
+    if (!comment || !comment.trim()) return res.status(400).json({ error: "التعليق مطلوب" });
+    const u = authDb.prepare("SELECT username FROM users WHERE id = ?").get(req.userId) as any;
+    const r = authDb.prepare("INSERT INTO dataset_comments (dataset_id, user_id, username, comment, created_at) VALUES (?, ?, ?, ?, ?)").run(id, req.userId, u?.username || null, comment.trim(), Date.now());
+    try {
+      const ds = authDb.prepare("SELECT owner_id, name FROM datasets WHERE id = ?").get(id) as any;
+      const sharedUsers = authDb.prepare("SELECT user_id FROM dataset_access WHERE dataset_id = ?").all(id) as { user_id: number }[];
+      const recipients = new Set<number>();
+      if (ds?.owner_id && ds.owner_id !== req.userId) recipients.add(ds.owner_id);
+      sharedUsers.forEach((s) => { if (s.user_id !== req.userId) recipients.add(s.user_id); });
+      for (const rid of recipients) notify(rid, "comment", "تعليق جديد", `${u?.username || "مستخدم"} أضاف تعليقاً على "${ds?.name}"`, `#/datasets/${id}`);
+    } catch {}
+    res.json({ ok: true, id: r.lastInsertRowid });
+  });
+  app.delete("/api/comments/:id", requireAuth, (req: any, res) => {
+    const cid = parseInt(req.params.id, 10);
+    const c = authDb.prepare("SELECT user_id FROM dataset_comments WHERE id = ?").get(cid) as any;
+    if (!c) return res.status(404).json({ error: "غير موجود" });
+    if (c.user_id !== req.userId && req.userRole !== "admin") return res.status(403).json({ error: "غير مسموح" });
+    authDb.prepare("DELETE FROM dataset_comments WHERE id = ?").run(cid);
+    res.json({ ok: true });
+  });
+
+  // ═══ سؤال الأمان + نسيت كلمة المرور ═══
+  app.post("/api/auth/security-question", requireAuth, (req: any, res) => {
+    const { question, answer } = req.body || {};
+    if (!question || !answer || answer.length < 3) return res.status(400).json({ error: "السؤال والإجابة مطلوبان" });
+    const salt = makeSalt();
+    const answerHash = hashPassword(answer.toLowerCase().trim(), salt);
+    authDb.prepare("INSERT OR REPLACE INTO security_questions (user_id, question, answer_hash, salt) VALUES (?, ?, ?, ?)").run(req.userId, question, answerHash, salt);
+    res.json({ ok: true });
+  });
+  app.get("/api/auth/security-question", requireAuth, (req: any, res) => {
+    const sq = authDb.prepare("SELECT question FROM security_questions WHERE user_id = ?").get(req.userId) as any;
+    res.json({ question: sq?.question || null });
+  });
+  app.post("/api/auth/forgot/lookup", (req, res) => {
+    const { username } = req.body || {};
+    if (!username) return res.status(400).json({ error: "اسم المستخدم مطلوب" });
+    const u = authDb.prepare("SELECT id FROM users WHERE username = ?").get(username) as any;
+    if (!u) return res.status(404).json({ error: "لا يوجد سؤال أمان لهذا المستخدم" });
+    const sq = authDb.prepare("SELECT question FROM security_questions WHERE user_id = ?").get(u.id) as any;
+    if (!sq) return res.status(404).json({ error: "لا يوجد سؤال أمان لهذا المستخدم" });
+    res.json({ question: sq.question });
+  });
+  app.post("/api/auth/forgot/reset", (req, res) => {
+    const { username, answer, newPassword } = req.body || {};
+    if (!username || !answer || !newPassword || newPassword.length < 6) return res.status(400).json({ error: "البيانات ناقصة أو كلمة المرور أقل من 6 أحرف" });
+    const u = authDb.prepare("SELECT id, username FROM users WHERE username = ?").get(username) as any;
+    if (!u) return res.status(401).json({ error: "غير صحيح" });
+    const sq = authDb.prepare("SELECT answer_hash, salt FROM security_questions WHERE user_id = ?").get(u.id) as any;
+    if (!sq) return res.status(404).json({ error: "لا يوجد سؤال أمان" });
+    const hash = hashPassword(String(answer).toLowerCase().trim(), sq.salt);
+    if (hash !== sq.answer_hash) {
+      logAudit(u.id, u.username, "password_reset_failed", { ip: getClientIp(req) });
+      return res.status(401).json({ error: "الإجابة غير صحيحة" });
+    }
+    const newSalt = makeSalt();
+    const newHash = hashPassword(newPassword, newSalt);
+    authDb.prepare("UPDATE users SET password_hash = ?, salt = ?, must_change_password = 0 WHERE id = ?").run(newHash, newSalt, u.id);
+    authDb.prepare("DELETE FROM sessions WHERE user_id = ?").run(u.id);
+    logAudit(u.id, u.username, "password_reset", { ip: getClientIp(req) });
+    res.json({ ok: true });
+  });
+
+  // ═══ نسخة احتياطية JSON (admin) ═══
+  app.get("/api/backup", requireAuth, (req: any, res) => {
+    const cur = authDb.prepare("SELECT role, username FROM users WHERE id = ?").get(req.userId) as any;
+    if (!cur || cur.role !== "admin") return res.status(403).json({ error: "يتطلب صلاحيات المسؤول" });
+    try {
+      const tables = ["users","sessions","datasets","dataset_access","groups","group_members","dataset_group_access","audit_log","notifications","dataset_comments","security_questions"];
+      const backup: any = { version: 1, exported_at: Date.now(), tables: {} };
+      for (const t of tables) {
+        try { backup.tables[t] = authDb.prepare(`SELECT * FROM ${t}`).all(); } catch { backup.tables[t] = []; }
+      }
+      logAudit(req.userId, cur.username, "backup_exported", { ip: getClientIp(req) });
+      res.setHeader("Content-Type", "application/json");
+      res.setHeader("Content-Disposition", `attachment; filename="qiyasat-backup-${new Date().toISOString().slice(0,10)}.json"`);
+      res.send(JSON.stringify(backup, null, 2));
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
   // فحص حالة المصادقة (هل مفعّلة)

@@ -10,12 +10,35 @@ import {
   registerAuthRoutes,
   requireAuth,
   canAccessDataset,
+  canEditDataset,
+  canDeleteDataset,
   getAccessibleDatasetIds,
+  getUserPermission,
   authDb,
   logAudit,
   notify,
   getClientIp,
 } from "./auth";
+
+// Middleware: requires edit-level on dataset
+function requireDatasetEdit(req: any, res: any, next: any) {
+  if (process.env.LOCAL_AUTH !== "1") return next();
+  const id = parseInt(req.params.id);
+  if (!id || isNaN(id)) return res.status(400).json({ error: "معرف غير صحيح" });
+  if (!canEditDataset(id, req.userId, req.userRole)) {
+    return res.status(403).json({ error: "تحتاج صلاحية تعديل" });
+  }
+  next();
+}
+function requireDatasetDelete(req: any, res: any, next: any) {
+  if (process.env.LOCAL_AUTH !== "1") return next();
+  const id = parseInt(req.params.id);
+  if (!id || isNaN(id)) return res.status(400).json({ error: "معرف غير صحيح" });
+  if (!canDeleteDataset(id, req.userId, req.userRole)) {
+    return res.status(403).json({ error: "تحتاج صلاحية حذف" });
+  }
+  next();
+}
 
 // Middleware: التحقق أن المستخدم يمتلك الـ dataset أو أدمن
 function requireDatasetAccess(req: any, res: any, next: any) {
@@ -65,23 +88,32 @@ export async function registerRoutes(
   // قائمة مجموعات البيانات (مفلترة حسب الصلاحية)
   app.get("/api/datasets", (req: any, res) => {
     const allowedIds = getAccessibleDatasetIds(req.userId, req.userRole);
-    const list = storage.listDatasetsForUser(allowedIds).map((d) => ({
-      ...d,
-      columns: JSON.parse(d.columns) as string[],
-    }));
+    const list = storage.listDatasetsForUser(allowedIds).map((d) => {
+      const perm = process.env.LOCAL_AUTH === "1"
+        ? getUserPermission(d.id, req.userId, req.userRole)
+        : "delete";
+      return {
+        ...d,
+        columns: JSON.parse(d.columns) as string[],
+        permission: perm,
+      };
+    });
     res.json(list);
   });
 
   // جلب مجموعة بيانات واحدة
-  app.get("/api/datasets/:id", requireDatasetAccess, (req, res) => {
+  app.get("/api/datasets/:id", requireDatasetAccess, (req: any, res) => {
     const id = parseInt(req.params.id);
     const d = storage.getDataset(id);
     if (!d) return res.status(404).json({ error: "غير موجود" });
-    res.json({ ...d, columns: JSON.parse(d.columns) as string[] });
+    const perm = process.env.LOCAL_AUTH === "1"
+      ? getUserPermission(id, req.userId, req.userRole)
+      : "delete";
+    res.json({ ...d, columns: JSON.parse(d.columns) as string[], permission: perm });
   });
 
-  // حذف مجموعة بيانات
-  app.delete("/api/datasets/:id", requireDatasetAccess, (req: any, res) => {
+  // حذف مجموعة بيانات (يتطلب صلاحية حذف)
+  app.delete("/api/datasets/:id", requireDatasetDelete, (req: any, res) => {
     const id = parseInt(req.params.id);
     const ds = storage.getDatasetWithOwner(id);
     storage.deleteDataset(id);

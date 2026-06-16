@@ -117,6 +117,7 @@ import AdvancedAnalysisPanel from "@/components/compare-panel";
 import SavedFiltersPanel from "@/components/saved-filters";
 import { Table2 } from "lucide-react";
 import { useOpenTabs } from "@/lib/open-tabs";
+import { DatasetComments } from "@/components/dataset-comments";
 
 interface Dataset {
   id: number;
@@ -1461,6 +1462,13 @@ export default function DatasetPage({ idProp }: { idProp?: number } = {}) {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* قسم التعليقات */}
+      {id ? (
+        <div className="mt-6">
+          <DatasetComments datasetId={String(id)} />
+        </div>
+      ) : null}
     </div>
   );
 }

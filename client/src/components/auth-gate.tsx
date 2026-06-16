@@ -186,6 +186,15 @@ function LoginForm({ onSuccess }: LoginFormProps) {
                 ? "دخول"
                 : "Sign in"}
             </Button>
+
+            <div className="text-center">
+              <a
+                href="#/forgot-password"
+                className="text-sm text-primary hover:underline"
+              >
+                {isAr ? "نسيت كلمة المرور؟" : "Forgot password?"}
+              </a>
+            </div>
           </form>
 
           <p className="text-xs text-muted-foreground text-center mt-6">
