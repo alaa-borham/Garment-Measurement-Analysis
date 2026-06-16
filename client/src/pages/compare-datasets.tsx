@@ -326,7 +326,19 @@ function DatasetPanel({
   };
 
   const applyFilters = () => {
-    setAppliedConditions(conditions);
+    // تبادل القيم تلقائياً في 'between' إذا كانت value > value2 (رقمياً)
+    const normalized = conditions.map((c) => {
+      if (c.operator === "between" && c.value && c.value2) {
+        const a = Number(c.value);
+        const b = Number(c.value2);
+        if (!isNaN(a) && !isNaN(b) && a > b) {
+          return { ...c, value: String(b), value2: String(a) };
+        }
+      }
+      return c;
+    });
+    setConditions(normalized);
+    setAppliedConditions(normalized);
     setAppliedLogic(logic);
   };
 
@@ -832,7 +844,17 @@ function DatasetPanel({
 
             {numericColumns.length === 0 && (
               <div className="text-center text-xs text-muted-foreground py-6 rounded-md border bg-muted/30">
-                {isAr ? "لا توجد أعمدة رقمية في هذا الملف" : "No numeric columns"}
+                {data.rows.length === 0
+                  ? hasActiveFilters
+                    ? isAr
+                      ? "لا توجد صفوف تطابق الفلاتر الحالية. جرّب تخفيف الشروط أو استخدم OR بدل AND."
+                      : "No rows match the current filters. Try loosening the conditions or use OR instead of AND."
+                    : isAr
+                    ? "لا توجد بيانات في هذا الملف"
+                    : "No data in this dataset"
+                  : isAr
+                  ? "لا توجد أعمدة رقمية في هذا الملف"
+                  : "No numeric columns"}
               </div>
             )}
           </>
