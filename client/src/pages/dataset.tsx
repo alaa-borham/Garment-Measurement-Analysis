@@ -108,6 +108,7 @@ import {
   Sparkles,
 } from "lucide-react";
 import { LangContext } from "@/lib/i18n";
+import { useAuth } from "@/components/auth-gate";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import type { FilterCondition } from "@shared/schema";
@@ -219,6 +220,13 @@ export default function DatasetPage({ idProp }: { idProp?: number } = {}) {
     return t && allowed.includes(t) ? t : "explore";
   })();
   const [activeTab, setActiveTab] = useState<string>(initialTab);
+  const { user: authUser } = useAuth();
+  const canFeat = (f: string) => {
+    if (!authUser) return true;
+    if (authUser.role === "admin") return true;
+    if (!authUser.permissions) return true;
+    return authUser.permissions[f] !== false;
+  };
   const [editingRow, setEditingRow] = useState<{ id: number | null; data: Record<string, any> } | null>(null);
   const [convertOpen, setConvertOpen] = useState(false);
   const [convertColumns, setConvertColumns] = useState<string[]>([]);
@@ -576,26 +584,36 @@ export default function DatasetPage({ idProp }: { idProp?: number } = {}) {
       <Tabs value={activeTab} onValueChange={setActiveTab}>
         <div className={`flex items-center justify-between gap-2 flex-wrap ${isEmbed ? "hidden" : ""}`}>
           <TabsList>
+            {canFeat("explore") && (
             <TabsTrigger value="explore" data-testid="tab-explore">
               <Search className="w-4 h-4 me-2" />
               {t.explore.title}
             </TabsTrigger>
+            )}
+            {canFeat("analyze") && (
             <TabsTrigger value="analyze" data-testid="tab-analyze">
               <BarChart3 className="w-4 h-4 me-2" />
               {t.analyze.title}
             </TabsTrigger>
+            )}
+            {canFeat("pivot") && (
             <TabsTrigger value="pivot" data-testid="tab-pivot">
               <Table2 className="w-4 h-4 me-2" />
               {t.pivot.title}
             </TabsTrigger>
+            )}
+            {canFeat("chart") && (
             <TabsTrigger value="chart" data-testid="tab-chart">
               <BarChart3 className="w-4 h-4 me-2" />
               {t.chart.title}
             </TabsTrigger>
+            )}
+            {canFeat("compare") && (
             <TabsTrigger value="compare" data-testid="tab-compare">
               <Sparkles className="w-4 h-4 me-2" />
               {t.compare.title}
             </TabsTrigger>
+            )}
           </TabsList>
         </div>
 

@@ -118,6 +118,13 @@ function BackupNavLink() {
 function Header() {
   const [location] = useLocation();
   const { lang, setLang, t } = useContext(LangContext);
+  const { user } = useAuth();
+  const can = (f: string) => {
+    if (!user) return true;
+    if (user.role === "admin") return true;
+    if (!user.permissions) return true;
+    return user.permissions[f] !== false;
+  };
   const [dark, setDark] = useState(() => {
     if (typeof window === "undefined") return false;
     const saved = window.localStorage.getItem("qiyasat-theme");
@@ -162,6 +169,7 @@ function Header() {
           >
             {t.nav.datasets}
           </Link>
+          {can("upload") && (
           <Link
             href="/upload"
             className={`px-2 py-1.5 rounded-md text-sm hover-elevate whitespace-nowrap ${
@@ -171,6 +179,8 @@ function Header() {
           >
             {t.nav.upload}
           </Link>
+          )}
+          {can("templates") && (
           <Link
             href="/templates"
             className={`px-2 py-1.5 rounded-md text-sm hover-elevate whitespace-nowrap flex items-center gap-1 ${
@@ -180,6 +190,8 @@ function Header() {
             <FileText className="w-4 h-4" />
             {lang === "ar" ? "قوالب" : "Templates"}
           </Link>
+          )}
+          {can("compare_files") && (
           <Link
             href="/compare"
             className={`px-2 py-1.5 rounded-md text-sm hover-elevate whitespace-nowrap flex items-center gap-1 ${
@@ -189,6 +201,8 @@ function Header() {
             <GitCompare className="w-4 h-4" />
             {lang === "ar" ? "مقارنة" : "Compare"}
           </Link>
+          )}
+          {can("multi_analysis") && (
           <Link
             href="/multi-analysis"
             className={`px-2 py-1.5 rounded-md text-sm hover-elevate whitespace-nowrap flex items-center gap-1 ${
@@ -198,6 +212,7 @@ function Header() {
             <BarChart3 className="w-4 h-4" />
             {lang === "ar" ? "تحليل متعدد" : "Multi-Analysis"}
           </Link>
+          )}
           <AdminNavLink />
           <GroupsNavLink />
           <BackupNavLink />

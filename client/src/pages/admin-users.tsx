@@ -37,6 +37,8 @@ import {
   Shield,
   Edit,
   AlertCircle,
+  Settings2,
+  RotateCcw,
 } from "lucide-react";
 import { LangContext } from "@/lib/i18n";
 import { useAuth } from "@/components/auth-gate";
@@ -66,6 +68,29 @@ function getRoleVariant(role: string): any {
   return r?.color || "outline";
 }
 
+type FeatureMeta = { ar: string; en: string; group: "data" | "view" | "admin" };
+const FEATURE_LABELS: Record<string, FeatureMeta> = {
+  upload: { ar: "رفع الملفات", en: "Upload files", group: "data" },
+  explore: { ar: "استعراض البيانات", en: "Explore data", group: "view" },
+  analyze: { ar: "تحليل أساسي", en: "Basic analysis", group: "view" },
+  pivot: { ar: "جداول محورية", en: "Pivot tables", group: "view" },
+  chart: { ar: "الرسوم البيانية", en: "Charts", group: "view" },
+  compare: { ar: "مقارنة داخل الملف", en: "In-file compare", group: "view" },
+  compare_files: { ar: "مقارنة الملفات", en: "Compare files", group: "view" },
+  multi_analysis: { ar: "تحليل متعدد الملفات", en: "Multi-file analysis", group: "view" },
+  templates: { ar: "القوالب", en: "Templates", group: "view" },
+  export: { ar: "التصدير", en: "Export", group: "data" },
+  edit_rows: { ar: "تعديل الصفوف", en: "Edit rows", group: "data" },
+  delete_dataset: { ar: "حذف الملفات", en: "Delete datasets", group: "admin" },
+  share_dataset: { ar: "مشاركة الملفات", en: "Share datasets", group: "admin" },
+  comments: { ar: "التعليقات", en: "Comments", group: "view" },
+};
+const GROUP_LABELS: Record<string, { ar: string; en: string }> = {
+  data: { ar: "البيانات", en: "Data" },
+  view: { ar: "العرض والتحليل", en: "View & Analysis" },
+  admin: { ar: "إدارة", en: "Admin" },
+};
+
 export default function AdminUsersPage() {
   const { lang } = useContext(LangContext);
   const isAr = lang === "ar";
@@ -91,6 +116,67 @@ export default function AdminUsersPage() {
   // Delete confirmation
   const [deleteTarget, setDeleteTarget] = useState<AdminUser | null>(null);
   const [deleting, setDeleting] = useState(false);
+
+  // Permissions dialog state
+  const [permsTarget, setPermsTarget] = useState<AdminUser | null>(null);
+  const [permsLoading, setPermsLoading] = useState(false);
+  const [permsSaving, setPermsSaving] = useState(false);
+  const [permsList, setPermsList] = useState<string[]>([]);
+  const [permsValues, setPermsValues] = useState<Record<string, boolean>>({});
+  const [permsIsCustom, setPermsIsCustom] = useState(false);
+  const [permsDefaults, setPermsDefaults] = useState<Record<string, boolean>>({});
+
+  const openPermsDialog = async (u: AdminUser) => {
+    setPermsTarget(u);
+    setPermsLoading(true);
+    try {
+      const res = await fetch(`/api/auth/users/${u.id}/permissions`, {
+        credentials: "include",
+      });
+      if (!res.ok) throw new Error("failed");
+      const data = await res.json();
+      setPermsList(Array.isArray(data.features) ? data.features : []);
+      setPermsValues(data.permissions || {});
+      setPermsDefaults(data.defaults || {});
+      setPermsIsCustom(!!data.isCustom);
+    } catch (e) {
+      toast({
+        title: isAr ? "تعذر تحميل الصلاحيات" : "Failed to load permissions",
+        variant: "destructive",
+      });
+      setPermsTarget(null);
+    } finally {
+      setPermsLoading(false);
+    }
+  };
+
+  const savePermissions = async (toDefaults: boolean) => {
+    if (!permsTarget) return;
+    setPermsSaving(true);
+    try {
+      const body = JSON.stringify({
+        permissions: toDefaults ? null : permsValues,
+      });
+      const res = await fetch(`/api/auth/users/${permsTarget.id}/permissions`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body,
+      });
+      if (!res.ok) throw new Error("failed");
+      toast({
+        title: isAr ? "تم حفظ الصلاحيات" : "Permissions saved",
+      });
+      setPermsTarget(null);
+    } catch (e) {
+      toast({
+        title: isAr ? "تعذر حفظ الصلاحيات" : "Failed to save permissions",
+        variant: "destructive",
+      });
+    } finally {
+      setPermsSaving(false);
+    }
+  };
 
   const loadUsers = async () => {
     setLoading(true);
@@ -421,6 +507,16 @@ export default function AdminUsersPage() {
                           <Button
                             variant="ghost"
                             size="sm"
+                            onClick={() => openPermsDialog(u)}
+                            disabled={u.role === "admin"}
+                            title={isAr ? "صلاحيات الميزات" : "Feature permissions"}
+                            data-testid={`button-perms-${u.id}`}
+                          >
+                            <Settings2 className="w-4 h-4" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
                             onClick={() => setDeleteTarget(u)}
                             disabled={currentUser?.id === u.id}
                             title={isAr ? "حذف" : "Delete"}
@@ -629,6 +725,123 @@ export default function AdminUsersPage() {
                 : isAr
                 ? "حفظ"
                 : "Save"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Dialog: صلاحيات الميزات */}
+      <Dialog
+        open={!!permsTarget}
+        onOpenChange={(o) => !o && setPermsTarget(null)}
+      >
+        <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>
+              {isAr ? "صلاحيات الميزات" : "Feature Permissions"}
+              {permsTarget && (
+                <span className="text-sm text-muted-foreground ms-2 font-normal">
+                  ({permsTarget.username})
+                </span>
+              )}
+            </DialogTitle>
+          </DialogHeader>
+
+          {permsLoading ? (
+            <div className="py-8 text-center text-sm text-muted-foreground">
+              {isAr ? "جارٍ التحميل..." : "Loading..."}
+            </div>
+          ) : (
+            <div className="space-y-4">
+              <div className="flex items-center justify-between text-xs">
+                <Badge variant={permsIsCustom ? "default" : "secondary"}>
+                  {permsIsCustom
+                    ? isAr
+                      ? "صلاحيات مخصصة"
+                      : "Custom permissions"
+                    : isAr
+                      ? "صلاحيات افتراضية حسب الدور"
+                      : "Defaults by role"}
+                </Badge>
+                <span className="text-muted-foreground">
+                  {isAr ? "الدور:" : "Role:"} {permsTarget && getRoleLabel(permsTarget.role, isAr)}
+                </span>
+              </div>
+
+              {(["data", "view", "admin"] as const).map((group) => {
+                const feats = permsList.filter(
+                  (f) => FEATURE_LABELS[f]?.group === group,
+                );
+                if (feats.length === 0) return null;
+                return (
+                  <div key={group} className="border rounded-md p-3">
+                    <div className="text-sm font-semibold mb-2">
+                      {isAr ? GROUP_LABELS[group].ar : GROUP_LABELS[group].en}
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      {feats.map((f) => {
+                        const meta = FEATURE_LABELS[f];
+                        const checked = !!permsValues[f];
+                        const def = !!permsDefaults[f];
+                        return (
+                          <label
+                            key={f}
+                            className="flex items-center gap-2 p-2 rounded hover:bg-accent cursor-pointer text-sm"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={(e) =>
+                                setPermsValues((prev) => ({
+                                  ...prev,
+                                  [f]: e.target.checked,
+                                }))
+                              }
+                              className="w-4 h-4"
+                            />
+                            <span className="flex-1">
+                              {isAr ? meta.ar : meta.en}
+                            </span>
+                            {checked !== def && (
+                              <Badge variant="outline" className="text-[10px]">
+                                {isAr ? "مخصص" : "custom"}
+                              </Badge>
+                            )}
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          <DialogFooter className="gap-2">
+            <Button
+              variant="outline"
+              onClick={() => savePermissions(true)}
+              disabled={permsSaving || permsLoading}
+              data-testid="button-perms-reset"
+            >
+              <RotateCcw className="w-4 h-4 me-1" />
+              {isAr ? "استعادة الافتراضي" : "Restore defaults"}
+            </Button>
+            <Button
+              variant="ghost"
+              onClick={() => setPermsTarget(null)}
+              disabled={permsSaving}
+            >
+              {isAr ? "إلغاء" : "Cancel"}
+            </Button>
+            <Button
+              onClick={() => savePermissions(false)}
+              disabled={permsSaving || permsLoading}
+              data-testid="button-perms-save"
+            >
+              {permsSaving
+                ? isAr ? "جارٍ الحفظ..." : "Saving..."
+                : isAr ? "حفظ" : "Save"}
             </Button>
           </DialogFooter>
         </DialogContent>

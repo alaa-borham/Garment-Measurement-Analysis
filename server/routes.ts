@@ -18,6 +18,7 @@ import {
   logAudit,
   notify,
   getClientIp,
+  requireFeature,
 } from "./auth";
 
 // Middleware: requires edit-level on dataset
@@ -113,7 +114,7 @@ export async function registerRoutes(
   });
 
   // حذف مجموعة بيانات (يتطلب صلاحية حذف)
-  app.delete("/api/datasets/:id", requireDatasetDelete, (req: any, res) => {
+  app.delete("/api/datasets/:id", requireAuth, requireFeature("delete_dataset"), requireDatasetDelete, (req: any, res) => {
     const id = parseInt(req.params.id);
     const ds = storage.getDatasetWithOwner(id);
     storage.deleteDataset(id);
@@ -151,7 +152,7 @@ export async function registerRoutes(
   });
 
   // مشاركة dataset: تحديث قائمة المستخدمين المسموح لهم
-  app.post("/api/datasets/:id/access", requireDatasetAccess, (req: any, res) => {
+  app.post("/api/datasets/:id/access", requireAuth, requireFeature("share_dataset"), requireDatasetAccess, (req: any, res) => {
     const id = parseInt(req.params.id);
     const ds = storage.getDatasetWithOwner(id);
     if (!ds) return res.status(404).json({ error: "غير موجود" });
@@ -209,6 +210,8 @@ export async function registerRoutes(
   // رفع ملف Excel/CSV
   app.post(
     "/api/datasets/upload",
+    requireAuth,
+    requireFeature("upload"),
     upload.single("file"),
     async (req: Request, res) => {
       try {
@@ -296,7 +299,7 @@ export async function registerRoutes(
   });
 
   // حذف صفوف بناءً على شروط
-  app.post("/api/datasets/:id/delete-matching", (req, res) => {
+  app.post("/api/datasets/:id/delete-matching", requireAuth, requireFeature("edit_rows"), (req, res) => {
     try {
       const id = parseInt(req.params.id);
       const parsed = filterRequestSchema.parse(req.body);
@@ -315,7 +318,7 @@ export async function registerRoutes(
   });
 
   // تحديث صف واحد
-  app.patch("/api/datasets/:id/rows/:rowId", (req, res) => {
+  app.patch("/api/datasets/:id/rows/:rowId", requireAuth, requireFeature("edit_rows"), (req, res) => {
     try {
       const rowId = parseInt(req.params.rowId);
       const data = req.body?.data;
@@ -331,7 +334,7 @@ export async function registerRoutes(
   });
 
   // حذف صف واحد
-  app.delete("/api/datasets/:id/rows/:rowId", (req, res) => {
+  app.delete("/api/datasets/:id/rows/:rowId", requireAuth, requireFeature("edit_rows"), (req, res) => {
     const rowId = parseInt(req.params.rowId);
     const ok = storage.deleteRow(rowId);
     if (!ok) return res.status(404).json({ error: "الصف غير موجود" });
@@ -339,7 +342,7 @@ export async function registerRoutes(
   });
 
   // إضافة صف جديد
-  app.post("/api/datasets/:id/rows", (req, res) => {
+  app.post("/api/datasets/:id/rows", requireAuth, requireFeature("edit_rows"), (req, res) => {
     try {
       const id = parseInt(req.params.id);
       const data = req.body?.data;
@@ -355,7 +358,7 @@ export async function registerRoutes(
   });
 
   // تحويل وحدات (إنش <-> سم) على أعمدة مختارة
-  app.post("/api/datasets/:id/convert-units", (req, res) => {
+  app.post("/api/datasets/:id/convert-units", requireAuth, requireFeature("edit_rows"), (req, res) => {
     try {
       const id = parseInt(req.params.id);
       const columns = (req.body?.columns ?? []) as string[];
@@ -489,7 +492,7 @@ export async function registerRoutes(
   });
 
   // تصدير إلى Excel (مع تطبيق فلتر اختياري)
-  app.post("/api/datasets/:id/export", (req, res) => {
+  app.post("/api/datasets/:id/export", requireAuth, requireFeature("export"), (req, res) => {
     try {
       const id = parseInt(req.params.id);
       const dataset = storage.getDataset(id);

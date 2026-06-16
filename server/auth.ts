@@ -110,6 +110,10 @@ try {
   if (!userCols.some((c) => c.name === "last_login")) {
     authDb.exec("ALTER TABLE users ADD COLUMN last_login INTEGER");
   }
+  if (!userCols.some((c) => c.name === "permissions")) {
+    // جدار صلاحيات JSON تفصيلية للميزات (NULL = افتراضي حسب الدور)
+    authDb.exec("ALTER TABLE users ADD COLUMN permissions TEXT");
+  }
   const accessCols = authDb.prepare("PRAGMA table_info(dataset_access)").all() as { name: string }[];
   if (accessCols.length > 0 && !accessCols.some((c) => c.name === "permission")) {
     authDb.exec("ALTER TABLE dataset_access ADD COLUMN permission TEXT NOT NULL DEFAULT 'view'");
@@ -224,7 +228,99 @@ export function requireAuth(
   next();
 }
 
-// التحقق من صلاحية الوصول إلى dataset
+// =============================================================
+// صلاحيات الميزات (Feature Permissions)
+// =============================================================
+// كل ميزة لها مفتاح فريد. الأدمن يملك كل الميزات دومًا.
+export const FEATURES = [
+  "upload",          // رفع ملفات
+  "explore",         // استعراض + فلترة
+  "analyze",         // تحليل عمود إحصائي
+  "pivot",           // جدول محوري
+  "chart",           // مخططات
+  "compare",         // تحليل متقدم (الألوان/الصفوف)
+  "compare_files",   // مقارنة ملفين
+  "multi_analysis",  // تحليل متعدد الملفات
+  "templates",       // القوالب
+  "export",          // تصدير Excel/PDF
+  "edit_rows",       // تعديل/إضافة/حذف صفوف
+  "delete_dataset",  // حذف ملف
+  "share_dataset",   // مشاركة ملف مع مستخدم/مجموعة
+  "comments",        // التعليقات
+] as const;
+export type FeatureKey = typeof FEATURES[number];
+
+// صلاحيات افتراضية حسب الدور (تُستخدم عندما يكون permissions = NULL)
+export function defaultPermsForRole(role: string): Record<FeatureKey, boolean> {
+  const all = (val: boolean) =>
+    Object.fromEntries(FEATURES.map((f) => [f, val])) as Record<FeatureKey, boolean>;
+  if (role === "admin") return all(true);
+  if (role === "editor") return all(true);
+  if (role === "viewer") {
+    return {
+      ...all(false),
+      explore: true, analyze: true, pivot: true, chart: true,
+      compare: true, compare_files: true, multi_analysis: true,
+      templates: true, export: true, comments: true,
+    };
+  }
+  // user افتراضيًا: كل الميزات ماعدا حذف ومشاركة وتعديل صفوف
+  return {
+    ...all(true),
+    delete_dataset: false,
+    share_dataset: false,
+  };
+}
+
+export function getUserPermissions(
+  userId: number,
+  userRole: string
+): Record<FeatureKey, boolean> {
+  if (userRole === "admin") return defaultPermsForRole("admin");
+  try {
+    const row = authDb
+      .prepare("SELECT permissions FROM users WHERE id = ?")
+      .get(userId) as { permissions: string | null } | undefined;
+    if (row?.permissions) {
+      const parsed = JSON.parse(row.permissions) as Record<string, boolean>;
+      // دمج مع الافتراضي حتى تظهر الميزات الجديدة
+      const base = defaultPermsForRole(userRole);
+      const merged = { ...base };
+      for (const f of FEATURES) {
+        if (typeof parsed[f] === "boolean") (merged as any)[f] = parsed[f];
+      }
+      return merged;
+    }
+  } catch {}
+  return defaultPermsForRole(userRole);
+}
+
+export function hasFeature(
+  userId: number,
+  userRole: string,
+  feature: FeatureKey
+): boolean {
+  if (process.env.LOCAL_AUTH !== "1") return true;
+  if (userRole === "admin") return true;
+  const perms = getUserPermissions(userId, userRole);
+  return !!perms[feature];
+}
+
+// Middleware: يفحص صلاحية ميزة محددة
+export function requireFeature(feature: FeatureKey) {
+  return (req: any, res: any, next: any) => {
+    if (process.env.LOCAL_AUTH !== "1") return next();
+    const userId = req.userId;
+    const role = req.userRole || "user";
+    if (!userId) return res.status(401).json({ error: "غير مصرّح" });
+    if (hasFeature(userId, role, feature)) return next();
+    return res.status(403).json({ error: `لا تملك صلاحية الوصول لهذه الميزة (${feature})` });
+  };
+}
+
+// =============================================================
+// تفويض الوصول للـ datasets
+// =============================================================
 // مستوى الصلاحية: view < edit < delete
 export type Permission = "view" | "edit" | "delete";
 const PERM_LEVEL: Record<Permission, number> = { view: 1, edit: 2, delete: 3 };
@@ -461,8 +557,57 @@ export function registerAuthRoutes(app: Express) {
         role: user.role,
         mustChangePassword: !!user.must_change_password,
         lastLogin: user.last_login,
+        permissions: getUserPermissions(user.id, user.role),
       },
     });
+  });
+
+  // إرجاع قائمة الميزات المتاحة في النظام
+  app.get("/api/auth/features", requireAuth, requireAdmin, (_req, res) => {
+    res.json({ features: FEATURES });
+  });
+
+  // إرجاع صلاحيات مستخدم محدد (للأدمن)
+  app.get("/api/auth/users/:id/permissions", requireAuth, requireAdmin, (req, res) => {
+    const id = parseInt(req.params.id, 10);
+    const user = authDb
+      .prepare("SELECT id, username, role, permissions FROM users WHERE id = ?")
+      .get(id) as { id: number; username: string; role: string; permissions: string | null } | undefined;
+    if (!user) return res.status(404).json({ error: "المستخدم غير موجود" });
+    res.json({
+      userId: user.id,
+      username: user.username,
+      role: user.role,
+      isCustom: !!user.permissions,
+      permissions: getUserPermissions(user.id, user.role),
+      defaults: defaultPermsForRole(user.role),
+      features: FEATURES,
+    });
+  });
+
+  // تحديث صلاحيات مستخدم (للأدمن). body: { permissions: { feature: true/false, ... } } أو null للإعادة للافتراضي
+  app.put("/api/auth/users/:id/permissions", requireAuth, requireAdmin, (req, res) => {
+    const id = parseInt(req.params.id, 10);
+    const { permissions } = req.body || {};
+    const user = authDb.prepare("SELECT id, role FROM users WHERE id = ?").get(id) as { id: number; role: string } | undefined;
+    if (!user) return res.status(404).json({ error: "المستخدم غير موجود" });
+    if (user.role === "admin") {
+      return res.status(400).json({ error: "لا يمكن تغيير صلاحيات الأدمن (يملك الكل دومًا)" });
+    }
+    if (permissions === null) {
+      authDb.prepare("UPDATE users SET permissions = NULL WHERE id = ?").run(id);
+      return res.json({ ok: true, isCustom: false, permissions: defaultPermsForRole(user.role) });
+    }
+    if (!permissions || typeof permissions !== "object") {
+      return res.status(400).json({ error: "permissions غير صالحة" });
+    }
+    // تصفية: فقط المفاتيح المعروفة وبقيم boolean
+    const clean: Record<string, boolean> = {};
+    for (const f of FEATURES) {
+      if (typeof permissions[f] === "boolean") clean[f] = permissions[f];
+    }
+    authDb.prepare("UPDATE users SET permissions = ? WHERE id = ?").run(JSON.stringify(clean), id);
+    res.json({ ok: true, isCustom: true, permissions: getUserPermissions(id, user.role) });
   });
 
   // تغيير كلمة المرور
@@ -648,7 +793,7 @@ export function registerAuthRoutes(app: Express) {
     const rows = authDb.prepare("SELECT * FROM dataset_comments WHERE dataset_id = ? ORDER BY id DESC LIMIT 200").all(id);
     res.json({ comments: rows });
   });
-  app.post("/api/datasets/:id/comments", requireAuth, (req: any, res) => {
+  app.post("/api/datasets/:id/comments", requireAuth, requireFeature("comments"), (req: any, res) => {
     const id = parseInt(req.params.id, 10);
     if (!canAccessDataset(id, req.userId, req.userRole)) return res.status(403).json({ error: "غير مسموح" });
     const { comment } = req.body || {};

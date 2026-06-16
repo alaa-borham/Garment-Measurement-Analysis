@@ -12,6 +12,18 @@ interface User {
   role: string;
   mustChangePassword?: boolean;
   lastLogin?: number | null;
+  permissions?: Record<string, boolean>;
+}
+
+export function hasPermission(
+  user: User | null,
+  feature: string,
+): boolean {
+  if (!user) return false;
+  // Admins always have all permissions
+  if (user.role === "admin") return true;
+  if (!user.permissions) return true; // fallback if not loaded yet
+  return user.permissions[feature] !== false;
 }
 
 interface AuthContextValue {
