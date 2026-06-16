@@ -18,6 +18,8 @@ import {
   Trash2,
   RotateCcw,
   ExternalLink,
+  ChevronDown,
+  ChevronUp,
 } from "lucide-react";
 import { LangContext } from "@/lib/i18n";
 import { apiRequest } from "@/lib/queryClient";
@@ -147,6 +149,20 @@ export default function AdvancedAnalysisPanel({ datasetId, columns }: AdvancedAn
   // الصفوف المختارة (بالـ id)
   const [selectedRowIds, setSelectedRowIds] = useState<Set<number>>(new Set());
   const [selectedCols, setSelectedCols] = useState<Set<string>>(new Set());
+  // طي/توسيع قسم اختيار الأعمدة (تلقائي عند بدء تحديد الصفوف)
+  const [colsCollapsed, setColsCollapsed] = useState<boolean>(false);
+  const [colsCollapsedManual, setColsCollapsedManual] = useState<boolean>(false);
+
+  // طي تلقائي عند تحديد ≥1 من الأعمدة وبدء التركيز على الصفوف
+  // يطوي عند وجود أعمدة مختارة + بدء تحديد الصفوف، ويفتح إذا لم تبقَ أعمدة مختارة
+  useEffect(() => {
+    if (colsCollapsedManual) return;
+    if (selectedRowIds.size > 0 && selectedCols.size > 0) {
+      setColsCollapsed(true);
+    } else if (selectedRowIds.size === 0) {
+      setColsCollapsed(false);
+    }
+  }, [selectedRowIds.size, selectedCols.size, colsCollapsedManual]);
 
   // وضع الصفين
   const [rowAId, setRowAId] = useState<number | null>(null);
@@ -450,35 +466,74 @@ export default function AdvancedAnalysisPanel({ datasetId, columns }: AdvancedAn
             </div>
           </div>
 
-          {/* اختيار الأعمدة (مشترك بين كل الأوضاع) */}
+          {/* اختيار الأعمدة (مشترك بين كل الأوضاع) — قابل للطي */}
           <div className="mt-3 rounded-md border bg-muted/30 p-3 space-y-2">
             <div className="flex items-center justify-between flex-wrap gap-2">
-              <Label className="text-xs font-semibold flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() => {
+                  setColsCollapsed((v) => !v);
+                  setColsCollapsedManual(true);
+                }}
+                className="flex items-center gap-1 text-xs font-semibold hover:opacity-80"
+                data-testid="toggle-cols-collapse"
+              >
+                {colsCollapsed ? (
+                  <ChevronDown className="w-3.5 h-3.5" />
+                ) : (
+                  <ChevronUp className="w-3.5 h-3.5" />
+                )}
                 <Columns3 className="w-3.5 h-3.5" />
                 {L.selectColumns} ({selectedCols.size}/{columns.length})
-              </Label>
-              <div className="flex gap-1">
-                <Button variant="ghost" size="sm" onClick={selectAllCols} className="h-7 text-xs">
-                  <CheckSquare className="w-3.5 h-3.5 me-1" />
-                  {L.selectAll}
-                </Button>
-                <Button variant="ghost" size="sm" onClick={clearCols} className="h-7 text-xs">
-                  <Square className="w-3.5 h-3.5 me-1" />
-                  {L.clear}
-                </Button>
+              </button>
+              {!colsCollapsed && (
+                <div className="flex gap-1">
+                  <Button variant="ghost" size="sm" onClick={selectAllCols} className="h-7 text-xs">
+                    <CheckSquare className="w-3.5 h-3.5 me-1" />
+                    {L.selectAll}
+                  </Button>
+                  <Button variant="ghost" size="sm" onClick={clearCols} className="h-7 text-xs">
+                    <Square className="w-3.5 h-3.5 me-1" />
+                    {L.clear}
+                  </Button>
+                </div>
+              )}
+            </div>
+            {colsCollapsed ? (
+              <div className="flex flex-wrap gap-1">
+                {Array.from(selectedCols).slice(0, 12).map((c) => (
+                  <span
+                    key={c}
+                    className="text-[11px] px-2 py-0.5 rounded bg-primary/10 text-primary border border-primary/20 truncate max-w-[140px]"
+                    title={c}
+                  >
+                    {c}
+                  </span>
+                ))}
+                {selectedCols.size > 12 && (
+                  <span className="text-[11px] px-2 py-0.5 rounded bg-muted text-muted-foreground">
+                    +{selectedCols.size - 12}
+                  </span>
+                )}
+                {selectedCols.size === 0 && (
+                  <span className="text-[11px] text-muted-foreground">
+                    {isAr ? "لم يتم اختيار أعمدة" : "No columns selected"}
+                  </span>
+                )}
               </div>
-            </div>
-            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-1.5 max-h-40 overflow-auto">
-              {columns.map((c) => (
-                <label
-                  key={c}
-                  className="flex items-center gap-2 text-xs cursor-pointer hover:bg-muted/50 rounded px-2 py-1"
-                >
-                  <Checkbox checked={selectedCols.has(c)} onCheckedChange={() => toggleCol(c)} />
-                  <span className="truncate" title={c}>{c}</span>
-                </label>
-              ))}
-            </div>
+            ) : (
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-1.5 max-h-40 overflow-auto">
+                {columns.map((c) => (
+                  <label
+                    key={c}
+                    className="flex items-center gap-2 text-xs cursor-pointer hover:bg-muted/50 rounded px-2 py-1"
+                  >
+                    <Checkbox checked={selectedCols.has(c)} onCheckedChange={() => toggleCol(c)} />
+                    <span className="truncate" title={c}>{c}</span>
+                  </label>
+                ))}
+              </div>
+            )}
           </div>
 
           {/* عتبات الألوان */}
