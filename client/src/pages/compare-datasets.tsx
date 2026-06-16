@@ -184,10 +184,10 @@ function DatasetPanel({
   const [appliedConditions, setAppliedConditions] = useState<FilterCondition[]>([]);
   const [appliedLogic, setAppliedLogic] = useState<"AND" | "OR">("AND");
 
-  // أقسام قابلة للطي/الفتح
-  const [showStats, setShowStats] = useState(true);
-  const [showChart, setShowChart] = useState(true);
-  const [showAllCols, setShowAllCols] = useState(true);
+  // أقسام قابلة للطي/الفتح (مطوية افتراضياً)
+  const [showStats, setShowStats] = useState(false);
+  const [showChart, setShowChart] = useState(false);
+  const [showAllCols, setShowAllCols] = useState(false);
 
   // تحميل بيانات الملف عند تغير المعرف أو الفلاتر المطبقة
   useEffect(() => {
