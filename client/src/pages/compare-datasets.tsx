@@ -2,7 +2,19 @@ import { useState, useEffect, useContext, useMemo } from "react";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Loader2, GitCompare, X, ExternalLink, BarChart3, Eye, TrendingUp } from "lucide-react";
+import {
+  Loader2,
+  GitCompare,
+  X,
+  ExternalLink,
+  BarChart3,
+  Eye,
+  TrendingUp,
+  Filter,
+  Plus,
+  Sparkles,
+  RotateCcw,
+} from "lucide-react";
 import { LangContext } from "@/lib/i18n";
 import { Link } from "wouter";
 import {
@@ -14,6 +26,7 @@ import {
   ResponsiveContainer,
   CartesianGrid,
 } from "recharts";
+import type { FilterCondition } from "@shared/schema";
 
 interface Dataset {
   id: number;
@@ -38,6 +51,58 @@ interface Stats {
   sum: number;
   stdDev: number;
 }
+
+type Operator = FilterCondition["operator"];
+
+const OPS: Operator[] = [
+  "equals",
+  "not_equals",
+  "contains",
+  "not_contains",
+  "starts_with",
+  "ends_with",
+  "greater_than",
+  "less_than",
+  "greater_equal",
+  "less_equal",
+  "between",
+  "is_empty",
+  "is_not_empty",
+];
+
+const NO_VALUE_OPS: Operator[] = ["is_empty", "is_not_empty"];
+
+const OP_LABEL_AR: Record<Operator, string> = {
+  equals: "يساوي",
+  not_equals: "لا يساوي",
+  contains: "يحتوي",
+  not_contains: "لا يحتوي",
+  starts_with: "يبدأ بـ",
+  ends_with: "ينتهي بـ",
+  greater_than: "أكبر من",
+  less_than: "أصغر من",
+  greater_equal: "أكبر أو يساوي",
+  less_equal: "أصغر أو يساوي",
+  between: "بين",
+  is_empty: "فارغ",
+  is_not_empty: "غير فارغ",
+};
+
+const OP_LABEL_EN: Record<Operator, string> = {
+  equals: "equals",
+  not_equals: "not equals",
+  contains: "contains",
+  not_contains: "not contains",
+  starts_with: "starts with",
+  ends_with: "ends with",
+  greater_than: ">",
+  less_than: "<",
+  greater_equal: ">=",
+  less_equal: "<=",
+  between: "between",
+  is_empty: "is empty",
+  is_not_empty: "not empty",
+};
 
 // تنسيق رقمي ذكي مع فواصل أو اختصار للأرقام الكبيرة
 function fmtNum(v: any): string {
@@ -110,13 +175,22 @@ function DatasetPanel({
   const [statsLoading, setStatsLoading] = useState(false);
   const [showRows, setShowRows] = useState(false);
 
-  // تحميل تفاصيل الملف + الصفوف
+  // الفلاتر المتقدمة
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [conditions, setConditions] = useState<FilterCondition[]>([]);
+  const [logic, setLogic] = useState<"AND" | "OR">("AND");
+  const [appliedConditions, setAppliedConditions] = useState<FilterCondition[]>([]);
+  const [appliedLogic, setAppliedLogic] = useState<"AND" | "OR">("AND");
+
+  // تحميل بيانات الملف عند تغير المعرف أو الفلاتر المطبقة
   useEffect(() => {
     if (!dsId) {
       setDataset(null);
       setData(null);
       setColumnStats(null);
       setAnalyzeColumn("");
+      setConditions([]);
+      setAppliedConditions([]);
       return;
     }
     setLoading(true);
@@ -125,7 +199,12 @@ function DatasetPanel({
       fetch(`/api/datasets/${dsId}/query`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ page: 1, pageSize: 1000, conditions: [], logic: "AND" }),
+        body: JSON.stringify({
+          page: 1,
+          pageSize: 1000,
+          conditions: appliedConditions,
+          logic: appliedLogic,
+        }),
       }).then((r) => (r.ok ? r.json() : null)),
     ])
       .then(([dsInfo, queryRes]) => {
@@ -142,9 +221,9 @@ function DatasetPanel({
         setLoading(false);
       })
       .catch(() => setLoading(false));
-  }, [dsId]);
+  }, [dsId, appliedConditions, appliedLogic]);
 
-  // حساب الإحصائيات لكل الأعمدة الرقمية
+  // إحصائيات لكل الأعمدة الرقمية (تحسب من الصفوف المفلترة)
   const allStats = useMemo(() => {
     if (!data?.rows || !dataset?.columns) return {};
     const result: Record<string, { min: number; max: number; avg: number; count: number; sum: number }> = {};
@@ -174,8 +253,9 @@ function DatasetPanel({
     }
   }, [numericColumns, analyzeColumn]);
 
+  // إحصائيات الخادم (للعمود) — تتجاهل الفلاتر، فلا نستخدمها عند تفعيل الفلاتر
   useEffect(() => {
-    if (!dsId || !analyzeColumn) {
+    if (!dsId || !analyzeColumn || appliedConditions.length > 0) {
       setColumnStats(null);
       return;
     }
@@ -187,9 +267,9 @@ function DatasetPanel({
         setStatsLoading(false);
       })
       .catch(() => setStatsLoading(false));
-  }, [dsId, analyzeColumn]);
+  }, [dsId, analyzeColumn, appliedConditions]);
 
-  // Histogram - 10 خانات
+  // Histogram - 10 خانات (من الصفوف المفلترة)
   const histogramData = useMemo(() => {
     if (!analyzeColumn || !data?.rows) return [];
     const nums = data.rows
@@ -214,6 +294,41 @@ function DatasetPanel({
     });
     return buckets;
   }, [analyzeColumn, data]);
+
+  // إجراءات الفلاتر
+  const addCondition = () => {
+    if (!dataset?.columns?.length) return;
+    setConditions([
+      ...conditions,
+      { column: dataset.columns[0] || "", operator: "equals", value: "" },
+    ]);
+    setAdvancedOpen(true);
+  };
+
+  const updateCondition = (i: number, patch: Partial<FilterCondition>) => {
+    setConditions(conditions.map((c, idx) => (idx === i ? { ...c, ...patch } : c)));
+  };
+
+  const removeCondition = (i: number) => {
+    const next = conditions.filter((_, idx) => idx !== i);
+    setConditions(next);
+    if (next.length === 0) {
+      setAppliedConditions([]);
+      setAppliedLogic(logic);
+    }
+  };
+
+  const applyFilters = () => {
+    setAppliedConditions(conditions);
+    setAppliedLogic(logic);
+  };
+
+  const resetFilters = () => {
+    setConditions([]);
+    setAppliedConditions([]);
+  };
+
+  const hasActiveFilters = appliedConditions.length > 0;
 
   return (
     <Card className="flex flex-col overflow-hidden">
@@ -251,6 +366,11 @@ function DatasetPanel({
               <span className="mx-1">·</span>
               <span className="font-mono">
                 {fmtNum(data?.total ?? dataset.rowsCount ?? 0)} {isAr ? "صف" : "rows"}
+                {hasActiveFilters && (
+                  <span className="ms-1 text-primary">
+                    {isAr ? "(مفلتر)" : "(filtered)"}
+                  </span>
+                )}
               </span>
             </div>
             <Link
@@ -283,6 +403,163 @@ function DatasetPanel({
 
         {!loading && dataset && data && (
           <>
+            {/* زر التحليل المتقدم */}
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <Button
+                variant={advancedOpen || hasActiveFilters ? "default" : "outline"}
+                size="sm"
+                onClick={() => setAdvancedOpen((o) => !o)}
+                className="gap-1.5"
+              >
+                <Sparkles className="w-3.5 h-3.5" />
+                {isAr ? "تحليل متقدم" : "Advanced Analysis"}
+                {appliedConditions.length > 0 && (
+                  <Badge variant="secondary" className="ms-1 text-[10px] h-4 px-1.5">
+                    {appliedConditions.length} · {appliedLogic}
+                  </Badge>
+                )}
+              </Button>
+              {hasActiveFilters && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={resetFilters}
+                  className="gap-1 text-muted-foreground"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" />
+                  {isAr ? "إعادة تعيين" : "Reset"}
+                </Button>
+              )}
+            </div>
+
+            {/* لوحة الفلاتر المتقدمة */}
+            {advancedOpen && (
+              <div className="rounded-xl border-2 border-primary/30 bg-gradient-to-br from-primary/5 to-transparent p-3 space-y-3">
+                <div className="flex items-center justify-between gap-2 flex-wrap border-b border-primary/20 pb-2">
+                  <div className="flex items-center gap-1.5 text-sm font-semibold">
+                    <Filter className="w-4 h-4 text-primary" />
+                    {isAr ? "شروط الفلترة" : "Filter conditions"}
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <select
+                      value={logic}
+                      onChange={(e) => setLogic(e.target.value as "AND" | "OR")}
+                      className="h-7 px-2 text-xs rounded border bg-background"
+                    >
+                      <option value="AND">{isAr ? "كل الشروط (AND)" : "All (AND)"}</option>
+                      <option value="OR">{isAr ? "أي شرط (OR)" : "Any (OR)"}</option>
+                    </select>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={addCondition}
+                      className="h-7 gap-1 text-xs"
+                      disabled={!dataset.columns?.length}
+                    >
+                      <Plus className="w-3 h-3" />
+                      {isAr ? "إضافة شرط" : "Add"}
+                    </Button>
+                  </div>
+                </div>
+
+                {conditions.length === 0 ? (
+                  <p className="text-xs text-muted-foreground text-center py-2">
+                    {isAr
+                      ? 'لا توجد شروط. اضغط "إضافة شرط" لإنشاء فلتر.'
+                      : 'No conditions. Click "Add" to create a filter.'}
+                  </p>
+                ) : (
+                  <div className="space-y-1.5">
+                    {conditions.map((c, i) => (
+                      <div
+                        key={i}
+                        className="flex flex-wrap items-center gap-1.5 p-1.5 rounded-md bg-muted/50 border"
+                      >
+                        <select
+                          value={c.column}
+                          onChange={(e) => updateCondition(i, { column: e.target.value })}
+                          className="h-7 px-1.5 text-xs rounded border bg-background flex-1 min-w-[100px]"
+                        >
+                          {dataset.columns?.map((col) => (
+                            <option key={col} value={col}>
+                              {col}
+                            </option>
+                          ))}
+                        </select>
+                        <select
+                          value={c.operator}
+                          onChange={(e) =>
+                            updateCondition(i, { operator: e.target.value as Operator })
+                          }
+                          className="h-7 px-1.5 text-xs rounded border bg-background w-[110px]"
+                        >
+                          {OPS.map((op) => (
+                            <option key={op} value={op}>
+                              {isAr ? OP_LABEL_AR[op] : OP_LABEL_EN[op]}
+                            </option>
+                          ))}
+                        </select>
+                        {!NO_VALUE_OPS.includes(c.operator) && (
+                          <>
+                            <input
+                              value={c.value || ""}
+                              onChange={(e) => updateCondition(i, { value: e.target.value })}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") {
+                                  e.preventDefault();
+                                  applyFilters();
+                                }
+                              }}
+                              placeholder={isAr ? "القيمة" : "Value"}
+                              className="h-7 px-1.5 text-xs rounded border bg-background flex-1 min-w-[80px]"
+                            />
+                            {c.operator === "between" && (
+                              <input
+                                value={c.value2 || ""}
+                                onChange={(e) => updateCondition(i, { value2: e.target.value })}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter") {
+                                    e.preventDefault();
+                                    applyFilters();
+                                  }
+                                }}
+                                placeholder={isAr ? "إلى" : "To"}
+                                className="h-7 px-1.5 text-xs rounded border bg-background flex-1 min-w-[80px]"
+                              />
+                            )}
+                          </>
+                        )}
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7 shrink-0"
+                          onClick={() => removeCondition(i)}
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {conditions.length > 0 && (
+                  <div className="flex items-center gap-2 pt-1 border-t border-primary/10">
+                    <Button
+                      size="sm"
+                      onClick={applyFilters}
+                      className="h-7 gap-1 text-xs"
+                    >
+                      <Filter className="w-3 h-3" />
+                      {isAr ? "تطبيق" : "Apply"}
+                    </Button>
+                    <span className="text-[10px] text-muted-foreground">
+                      {isAr ? "Enter للتطبيق السريع" : "Press Enter to apply"}
+                    </span>
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* اختيار عمود للتحليل */}
             {numericColumns.length > 0 && (
               <div className="space-y-1.5">
@@ -314,11 +591,16 @@ function DatasetPanel({
                   <span className="flex items-center gap-1.5 truncate">
                     <TrendingUp className="w-4 h-4 text-primary shrink-0" />
                     <span className="truncate" title={analyzeColumn}>{analyzeColumn}</span>
+                    {hasActiveFilters && (
+                      <Badge variant="outline" className="text-[9px] h-4 px-1">
+                        {isAr ? "مفلتر" : "filtered"}
+                      </Badge>
+                    )}
                   </span>
                   {statsLoading && <Loader2 className="w-3.5 h-3.5 animate-spin text-primary shrink-0" />}
                 </div>
 
-                {columnStats ? (
+                {columnStats && !hasActiveFilters ? (
                   <div className="grid grid-cols-3 gap-2">
                     <StatBox label={isAr ? "العدد" : "Count"} value={fmtNum(columnStats.count)} tooltip={String(columnStats.count)} />
                     <StatBox label={isAr ? "المجموع" : "Sum"} value={fmtNum(columnStats.sum)} tooltip={String(columnStats.sum)} />
@@ -560,8 +842,8 @@ export default function CompareDatasetsPage() {
           </h1>
           <p className="text-muted-foreground text-sm mt-1">
             {isAr
-              ? "اختر ملفين أو أكثر — لكل ملف إحصائيات ورسم بياني وعرض للبيانات"
-              : "Pick 2+ datasets — each shows stats, chart, and data view"}
+              ? "اختر ملفين أو أكثر — لكل ملف فلاتر متقدمة وإحصائيات ورسم بياني"
+              : "Pick 2+ datasets — each has advanced filters, stats, and a chart"}
           </p>
         </div>
         <Button onClick={addPanel} disabled={panels.length >= 4} variant="outline" className="gap-1">

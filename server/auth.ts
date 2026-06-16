@@ -44,6 +44,8 @@ authDb.exec(`
     created_at INTEGER NOT NULL
   );
   CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_log(created_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_audit_user ON audit_log(user_id, created_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_log(action);
   CREATE TABLE IF NOT EXISTS groups (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL UNIQUE,
@@ -75,6 +77,7 @@ authDb.exec(`
     created_at INTEGER NOT NULL
   );
   CREATE INDEX IF NOT EXISTS idx_notif_user ON notifications(user_id, is_read, created_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_notif_user_all ON notifications(user_id, created_at DESC);
   CREATE TABLE IF NOT EXISTS dataset_comments (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     dataset_id INTEGER NOT NULL,
@@ -84,6 +87,12 @@ authDb.exec(`
     created_at INTEGER NOT NULL
   );
   CREATE INDEX IF NOT EXISTS idx_comments_ds ON dataset_comments(dataset_id, created_at);
+  CREATE INDEX IF NOT EXISTS idx_comments_user ON dataset_comments(user_id);
+  CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+  CREATE INDEX IF NOT EXISTS idx_dataset_access_user ON dataset_access(user_id);
+  CREATE INDEX IF NOT EXISTS idx_dataset_access_ds ON dataset_access(dataset_id);
+  CREATE INDEX IF NOT EXISTS idx_group_members_user ON group_members(user_id);
+  CREATE INDEX IF NOT EXISTS idx_dataset_group_access_ds ON dataset_group_access(dataset_id);
   CREATE TABLE IF NOT EXISTS security_questions (
     user_id INTEGER PRIMARY KEY,
     question TEXT NOT NULL,
