@@ -15,7 +15,7 @@ import DatasetsWorkspace from "@/components/datasets-workspace";
 import TabsBar from "@/components/tabs-bar";
 import { OpenTabsProvider } from "@/lib/open-tabs";
 import { AuthGate, LogoutButton, useAuth } from "@/components/auth-gate";
-import { Users, ScrollText, Database, UsersRound, FileText, GitCompare } from "lucide-react";
+import { Users, ScrollText, Database, UsersRound, FileText, GitCompare, BarChart3 } from "lucide-react";
 import { UpdateBadge } from "@/components/update-badge";
 import { NotificationsBell } from "@/components/notifications-bell";
 
@@ -28,6 +28,7 @@ const AdminBackupPage = lazy(() => import("@/pages/admin-backup"));
 const ForgotPasswordPage = lazy(() => import("@/pages/forgot-password"));
 const TemplatesPage = lazy(() => import("@/pages/templates"));
 const CompareDatasetsPage = lazy(() => import("@/pages/compare-datasets"));
+const MultiAnalysisPage = lazy(() => import("@/pages/multi-analysis"));
 
 function PageLoader() {
   return (
@@ -186,6 +187,15 @@ function Header() {
             <GitCompare className="w-4 h-4" />
             {lang === "ar" ? "مقارنة" : "Compare"}
           </Link>
+          <Link
+            href="/multi-analysis"
+            className={`px-2 py-1.5 rounded-md text-sm hover-elevate whitespace-nowrap flex items-center gap-1 ${
+              location === "/multi-analysis" ? "bg-accent text-accent-foreground" : ""
+            }`}
+          >
+            <BarChart3 className="w-4 h-4" />
+            {lang === "ar" ? "تحليل متعدد" : "Multi-Analysis"}
+          </Link>
           <AdminNavLink />
           <GroupsNavLink />
           <BackupNavLink />
@@ -263,6 +273,7 @@ function AppRouter() {
             <Route path="/admin/backup" component={AdminBackupPage} />
             <Route path="/templates" component={TemplatesPage} />
             <Route path="/compare" component={CompareDatasetsPage} />
+            <Route path="/multi-analysis" component={MultiAnalysisPage} />
             <Route component={NotFound} />
           </Switch>
         </Suspense>

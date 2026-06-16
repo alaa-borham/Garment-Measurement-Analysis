@@ -198,7 +198,14 @@ export default function DatasetPage({ idProp }: { idProp?: number } = {}) {
   const [statsColumn, setStatsColumn] = useState<string>("");
   // ترتيب الصفوف حسب عمود محدد (تصاعدي/تنازلي)
   const [sortBy, setSortBy] = useState<{ column: string; dir: "asc" | "desc" } | null>(null);
-  const [activeTab, setActiveTab] = useState<string>("explore");
+  // قراءة التبويب الافتراضي من URL (?tab=...) لدعم فتح تبويب محدد في وضع embed
+  const initialTab = (() => {
+    if (typeof window === "undefined") return "explore";
+    const t = new URLSearchParams(window.location.search).get("tab");
+    const allowed = ["explore", "analyze", "pivot", "chart", "compare"];
+    return t && allowed.includes(t) ? t : "explore";
+  })();
+  const [activeTab, setActiveTab] = useState<string>(initialTab);
   const [editingRow, setEditingRow] = useState<{ id: number | null; data: Record<string, any> } | null>(null);
   const [convertOpen, setConvertOpen] = useState(false);
   const [convertColumns, setConvertColumns] = useState<string[]>([]);
@@ -556,7 +563,7 @@ export default function DatasetPage({ idProp }: { idProp?: number } = {}) {
       )}
 
       <Tabs value={activeTab} onValueChange={setActiveTab}>
-        <div className="flex items-center justify-between gap-2 flex-wrap">
+        <div className={`flex items-center justify-between gap-2 flex-wrap ${isEmbed ? "hidden" : ""}`}>
           <TabsList>
             <TabsTrigger value="explore" data-testid="tab-explore">
               <Search className="w-4 h-4 me-2" />
