@@ -753,6 +753,14 @@ export default function DatasetPage({ idProp }: { idProp?: number } = {}) {
   }
 
   const total = rowsQuery.data?.total ?? 0;
+  // Use all matching rows, not the current page or extra pinned rows.
+  const fileRowCount = dataset.rowCount ?? 0;
+  const matchingRatio = fileRowCount > 0 ? total / fileRowCount : 0;
+  const resultLocale = lang === "ar" ? "ar-EG" : "en-US";
+  const matchingPercentage = matchingRatio.toLocaleString(resultLocale, {
+    style: "percent",
+    maximumFractionDigits: 2,
+  });
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const BackIcon = lang === "ar" ? ArrowRight : ArrowLeft;
   const PrevIcon = lang === "ar" ? ChevronRight : ChevronLeft;
@@ -1017,14 +1025,33 @@ export default function DatasetPage({ idProp }: { idProp?: number } = {}) {
 
           <Card>
             <CardContent className="p-0">
-              <div className="flex items-center justify-between px-4 py-3 border-b">
-                <div className="text-sm">
+              <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 border-b">
+                <div className="flex flex-wrap items-center gap-2 text-sm" aria-live="polite" aria-atomic="true">
+                  <span>
                   <span className="font-medium" data-testid="text-results-count">
-                    {(total ?? 0).toLocaleString(lang === "ar" ? "ar-EG" : "en-US")}
+                    {rowsQuery.isFetching ? "…" : rowsQuery.isError ? "—" : total.toLocaleString(resultLocale)}
                   </span>{" "}
                   <span className="text-muted-foreground">{t.explore.results}</span>
+                  </span>
+                  {rowsQuery.isSuccess && !rowsQuery.isFetching && (
+                    <Badge
+                      variant="secondary"
+                      className="gap-1.5 text-xs tabular-nums"
+                      data-testid="badge-results-percentage"
+                      title={lang === "ar"
+                        ? "عدد الصفوف المطابقة ÷ إجمالي صفوف الملف × 100، وليس عدد صفوف الصفحة الحالية"
+                        : "All matching rows ÷ total file rows × 100, not just the current page"}
+                    >
+                      <span data-testid="text-results-percentage">{matchingPercentage}</span>
+                      <span className="font-normal">
+                        {lang === "ar" ? "من إجمالي الملف" : "of total file"}
+                        {" ("}{fileRowCount.toLocaleString(resultLocale)}{" "}
+                        {t.common.rows}{")"}
+                      </span>
+                    </Badge>
+                  )}
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                   {sortBy && (
                     <Button
                       variant="secondary"
