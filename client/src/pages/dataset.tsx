@@ -112,6 +112,7 @@ import {
 } from "lucide-react";
 import { LangContext } from "@/lib/i18n";
 import { useAuth } from "@/components/auth-gate";
+import { useTransferPermissions } from "@/hooks/use-transfer-permissions";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import type { FilterCondition } from "@shared/schema";
@@ -246,6 +247,7 @@ export default function DatasetPage({ idProp }: { idProp?: number } = {}) {
     } catch {}
   }, [activeTab, id, isEmbedMode]);
   const { user: authUser } = useAuth();
+  const { canExport } = useTransferPermissions();
   const canFeat = (f: string) => {
     if (!authUser) return true;
     if (authUser.role === "admin") return true;
@@ -716,7 +718,7 @@ export default function DatasetPage({ idProp }: { idProp?: number } = {}) {
   };
 
   const handleExport = async () => {
-    if (!canFeat("export")) return;
+    if (!canExport) return;
     const res = await fetch(
       "__PORT_5000__".startsWith("__")
         ? `/api/datasets/${id}/export`
@@ -799,10 +801,10 @@ export default function DatasetPage({ idProp }: { idProp?: number } = {}) {
             </div>
             <div className="flex items-center gap-2 shrink-0">
               <DatasetVersions datasetId={id} />
-              <Button variant="outline" size="sm" onClick={handleExport} data-testid="button-export">
+              {canExport && <Button variant="outline" size="sm" onClick={handleExport} data-testid="button-export">
                 <Download className="w-4 h-4 me-2" />
                 {t.common.export}
-              </Button>
+              </Button>}
             </div>
           </div>
           {/* L: Tags editor */}

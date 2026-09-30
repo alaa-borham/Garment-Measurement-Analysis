@@ -22,8 +22,7 @@ export function hasPermission(
   if (!user) return false;
   // Admins always have all permissions
   if (user.role === "admin") return true;
-  if (!user.permissions) return true; // fallback if not loaded yet
-  return user.permissions[feature] !== false;
+  return user.permissions?.[feature] === true;
 }
 
 interface AuthContextValue {
@@ -230,19 +229,21 @@ export function AuthGate({ children }: { children: ReactNode }) {
     installAuthFetch();
     (async () => {
       try {
-        const r = await fetch("/api/auth/status");
+        const r = await fetch("/api/auth/status", { cache: "no-store" });
+        if (!r.ok) throw new Error("Authentication status unavailable");
         const s = await r.json();
-        if (!s.enabled) {
+        if (s.enabled === false) {
           setStatus("no-auth");
           return;
         }
+        if (s.enabled !== true) throw new Error("Invalid authentication status");
         // المصادقة مفعّلة — تحقّق من Token
         const token = getToken();
         if (!token) {
           setStatus("needs-login");
           return;
         }
-        const me = await fetch("/api/auth/me");
+        const me = await fetch("/api/auth/me", { cache: "no-store" });
         if (me.ok) {
           const data = await me.json();
           setUser(data.user);
@@ -252,11 +253,54 @@ export function AuthGate({ children }: { children: ReactNode }) {
           setStatus("needs-login");
         }
       } catch {
-        // إذا فشل الفحص، تابع بدون مصادقة (للتطوير)
-        setStatus("no-auth");
+        // A network failure must never grant unrestricted access.
+        setUser(null);
+        setStatus("needs-login");
       }
     })();
   }, []);
+
+  // Permissions can change while the user's page remains open.
+  useEffect(() => {
+    if (status !== "authed") return;
+    let disposed = false;
+    let pending = false;
+    const controller = new AbortController();
+    const syncPermissions = async () => {
+      if (pending || document.visibilityState === "hidden") return;
+      pending = true;
+      try {
+        const me = await fetch("/api/auth/me", {
+          cache: "no-store",
+          signal: controller.signal,
+        });
+        if (disposed) return;
+        if (me.status === 401) {
+          clearToken();
+          setUser(null);
+          setStatus("needs-login");
+        } else if (me.ok) {
+          const data = await me.json();
+          if (!disposed) setUser(data.user);
+        }
+      } catch {
+        // Keep the last verified permissions; never fall back to unrestricted mode.
+      } finally {
+        pending = false;
+      }
+    };
+    void syncPermissions();
+    const timer = window.setInterval(syncPermissions, 15000);
+    window.addEventListener("focus", syncPermissions);
+    document.addEventListener("visibilitychange", syncPermissions);
+    return () => {
+      disposed = true;
+      controller.abort();
+      window.clearInterval(timer);
+      window.removeEventListener("focus", syncPermissions);
+      document.removeEventListener("visibilitychange", syncPermissions);
+    };
+  }, [status]);
 
   const logout = async () => {
     try {
@@ -288,7 +332,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
 
   const refreshUser = async () => {
     try {
-      const me = await fetch("/api/auth/me");
+      const me = await fetch("/api/auth/me", { cache: "no-store" });
       if (me.ok) {
         const data = await me.json();
         setUser(data.user);
