@@ -1,4 +1,4 @@
-import { useContext, useEffect, useState } from "react";
+import { useContext, useEffect, useRef, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -127,52 +127,89 @@ export default function AdminUsersPage() {
   const [permsValues, setPermsValues] = useState<Record<string, boolean>>({});
   const [permsIsCustom, setPermsIsCustom] = useState(false);
   const [permsDefaults, setPermsDefaults] = useState<Record<string, boolean>>({});
+  const permsRequestId = useRef(0);
+  useEffect(() => () => { permsRequestId.current++; }, []);
 
   const openPermsDialog = async (u: AdminUser) => {
+    const requestId = ++permsRequestId.current;
     setPermsTarget(u);
     setPermsLoading(true);
+    setPermsValues({});
+    setPermsList([]);
     try {
       const res = await fetch(`/api/auth/users/${u.id}/permissions`, {
         credentials: "include",
+        cache: "no-store",
       });
       if (!res.ok) throw new Error("failed");
       const data = await res.json();
+      if (requestId !== permsRequestId.current) return;
+      if (data.userId !== u.id || !Array.isArray(data.features) || !data.permissions) {
+        throw new Error("Invalid permissions response");
+      }
       setPermsList(Array.isArray(data.features) ? data.features : []);
       setPermsValues(data.permissions || {});
       setPermsDefaults(data.defaults || {});
       setPermsIsCustom(!!data.isCustom);
     } catch (e) {
+      if (requestId !== permsRequestId.current) return;
       toast({
         title: isAr ? "تعذر تحميل الصلاحيات" : "Failed to load permissions",
         variant: "destructive",
       });
       setPermsTarget(null);
     } finally {
-      setPermsLoading(false);
+      if (requestId === permsRequestId.current) setPermsLoading(false);
     }
   };
 
   const savePermissions = async (toDefaults: boolean) => {
-    if (!permsTarget) return;
+    if (!permsTarget || permsSaving || permsLoading || !permsList.length) return;
+    const userId = permsTarget.id;
+    const expected = Object.fromEntries(permsList.map((f) => [
+      f, !!(toDefaults ? permsDefaults[f] : permsValues[f]),
+    ]));
+    const matchesExpected = (values: Record<string, boolean> | undefined) =>
+      !!values && permsList.every((f) => values[f] === expected[f]);
     setPermsSaving(true);
     try {
       const body = JSON.stringify({
-        permissions: toDefaults ? null : permsValues,
+        permissions: toDefaults ? null : expected,
       });
-      const res = await fetch(`/api/auth/users/${permsTarget.id}/permissions`, {
+      const res = await fetch(`/api/auth/users/${userId}/permissions`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
+        cache: "no-store",
         body,
       });
-      if (!res.ok) throw new Error("failed");
+      const saved = await res.json();
+      if (!res.ok || saved.ok !== true) {
+        throw new Error(saved.error || (isAr ? "رفض الخادم حفظ الصلاحيات" : "Server rejected permissions"));
+      }
+      if (!matchesExpected(saved.permissions)) {
+        throw new Error(isAr ? "القيم التي أعادها الخادم لا تطابق اختياراتك." : "Server values do not match your selection.");
+      }
+      const check = await fetch(`/api/auth/users/${userId}/permissions`, {
+        credentials: "include",
+        cache: "no-store",
+      });
+      if (!check.ok) throw new Error(isAr ? "تعذر التحقق من القيم المحفوظة. أعد فتح القائمة للتحقق." : "Could not verify saved values. Reopen the dialog to check.");
+      const confirmed = await check.json();
+      if (confirmed.userId !== userId || !matchesExpected(confirmed.permissions) ||
+          confirmed.isCustom !== !toDefaults) {
+        throw new Error(isAr ? "لم تتطابق الصلاحيات بعد إعادة قراءتها. لم يتم تأكيد الحفظ؛ حاول مجدداً." : "Read-back verification failed. Save was not confirmed; retry.");
+      }
+      setPermsValues(confirmed.permissions);
+      setPermsIsCustom(confirmed.isCustom);
       toast({
         title: isAr ? "تم حفظ الصلاحيات" : "Permissions saved",
       });
       setPermsTarget(null);
     } catch (e) {
       toast({
-        title: isAr ? "تعذر حفظ الصلاحيات" : "Failed to save permissions",
+        title: isAr ? "تعذر تأكيد حفظ الصلاحيات" : "Could not confirm permissions save",
+        description: e instanceof Error ? e.message : undefined,
         variant: "destructive",
       });
     } finally {
@@ -735,7 +772,12 @@ export default function AdminUsersPage() {
       {/* Dialog: صلاحيات الميزات */}
       <Dialog
         open={!!permsTarget}
-        onOpenChange={(o) => !o && setPermsTarget(null)}
+        onOpenChange={(o) => {
+          if (!o && !permsSaving) {
+            permsRequestId.current++;
+            setPermsTarget(null);
+          }
+        }}
       >
         <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
           <DialogHeader>
@@ -754,7 +796,7 @@ export default function AdminUsersPage() {
               {isAr ? "جارٍ التحميل..." : "Loading..."}
             </div>
           ) : (
-            <div className="space-y-4">
+            <fieldset className="space-y-4 min-w-0" disabled={permsSaving}>
               <div className="flex items-center justify-between text-xs">
                 <Badge variant={permsIsCustom ? "default" : "secondary"}>
                   {permsIsCustom
@@ -874,12 +916,13 @@ export default function AdminUsersPage() {
                               type="checkbox"
                               data-testid={`permission-${f}`}
                               checked={checked}
-                              onChange={(e) =>
+                              onChange={(e) => {
+                                const checked = e.currentTarget.checked;
                                 setPermsValues((prev) => ({
                                   ...prev,
-                                  [f]: e.target.checked,
-                                }))
-                              }
+                                  [f]: checked,
+                                }));
+                              }}
                               className="w-4 h-4"
                             />
                             <span className="flex-1">
@@ -902,7 +945,7 @@ export default function AdminUsersPage() {
                   </div>
                 );
               })}
-            </div>
+            </fieldset>
           )}
 
           <DialogFooter className="gap-2">

@@ -514,6 +514,13 @@ export function getUserById(userId: number): User | undefined {
 export function registerAuthRoutes(app: Express) {
   if (process.env.LOCAL_AUTH !== "1") return;
   ensureDefaultUser();
+  // User-specific permissions must never be reused from a browser/proxy cache.
+  app.use("/api/auth", (_req, res, next) => {
+    res.setHeader("Cache-Control", "private, no-store, max-age=0");
+    res.setHeader("Pragma", "no-cache");
+    res.vary("Authorization");
+    next();
+  });
 
   // تسجيل دخول
   app.post("/api/auth/login", (req, res) => {
@@ -632,20 +639,46 @@ export function registerAuthRoutes(app: Express) {
     if (user.role === "admin") {
       return res.status(400).json({ error: "لا يمكن تغيير صلاحيات الأدمن (يملك الكل دومًا)" });
     }
-    if (permissions === null) {
-      authDb.prepare("UPDATE users SET permissions = NULL WHERE id = ?").run(id);
-      return res.json({ ok: true, isCustom: false, permissions: defaultPermsForRole(user.role) });
-    }
-    if (!permissions || typeof permissions !== "object") {
+    if (permissions !== null &&
+        (!permissions || typeof permissions !== "object" || Array.isArray(permissions))) {
       return res.status(400).json({ error: "permissions غير صالحة" });
     }
-    // تصفية: فقط المفاتيح المعروفة وبقيم boolean
-    const clean: Record<string, boolean> = {};
-    for (const f of FEATURES) {
-      if (typeof permissions[f] === "boolean") clean[f] = permissions[f];
+    if (permissions !== null &&
+        (!Object.keys(permissions).length || Object.entries(permissions).some(([key, value]) =>
+          !FEATURES.includes(key as FeatureKey) || typeof value !== "boolean"))) {
+      return res.status(400).json({ error: "مفاتيح الصلاحيات أو قيمها غير صالحة، حدّث الصفحة ثم حاول مجدداً" });
     }
-    authDb.prepare("UPDATE users SET permissions = ? WHERE id = ?").run(JSON.stringify(clean), id);
-    res.json({ ok: true, isCustom: true, permissions: getUserPermissions(id, user.role) });
+    // Preserve unmentioned keys for API clients sending partial updates.
+    const expected = permissions === null
+      ? defaultPermsForRole(user.role)
+      : { ...getUserPermissions(id, user.role), ...permissions };
+    const serialized = permissions === null ? null : JSON.stringify(expected);
+    try {
+      const effective = authDb.transaction(() => {
+        const update = authDb.prepare("UPDATE users SET permissions = ? WHERE id = ?").run(serialized, id);
+        const stored = authDb.prepare("SELECT permissions FROM users WHERE id = ?")
+          .get(id) as { permissions: string | null } | undefined;
+        if (update.changes !== 1 || !stored || stored.permissions !== serialized) {
+          throw new Error("Permissions write verification failed");
+        }
+        const resolved = getUserPermissions(id, user.role);
+        if (FEATURES.some((f) => resolved[f] !== expected[f])) {
+          throw new Error("Effective permissions do not match");
+        }
+        return resolved;
+      })();
+      try {
+        logAudit((req as any).userId, null, "permissions_updated", {
+          targetType: "user", targetId: String(id),
+          details: { isCustom: permissions !== null, permissions: effective },
+          ip: getClientIp(req),
+        });
+      } catch (e) { console.error("[permissions audit] failed", e); }
+      return res.json({ ok: true, userId: id, isCustom: permissions !== null, permissions: effective });
+    } catch (e) {
+      console.error("[permissions save] failed", e);
+      return res.status(500).json({ error: "تعذر تأكيد حفظ الصلاحيات في قاعدة البيانات" });
+    }
   });
 
   // تغيير كلمة المرور
