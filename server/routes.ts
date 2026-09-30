@@ -6,6 +6,8 @@ import * as XLSX from "xlsx";
 import { storage } from "./storage";
 import { filterRequestSchema, pivotRequestSchema, chartRequestSchema } from "@shared/schema";
 import { z } from "zod";
+import { duplicatePreviewSchema, duplicateDeleteSchema } from "../shared/duplicates";
+import { previewDuplicates, deleteDuplicateCopies } from "./duplicates";
 import {
   registerAuthRoutes,
   requireAuth,
@@ -113,7 +115,7 @@ export async function registerRoutes(
     res.json({ ...d, columns: JSON.parse(d.columns) as string[], permission: perm });
   });
 
-  // حذف مجموعة بيانات (يتطلب صلاحية حذف)
+  // حذف مجموعة بيانات (soft delete — ينقل للسلّة)
   app.delete("/api/datasets/:id", requireAuth, requireFeature("delete_dataset"), requireDatasetDelete, (req: any, res) => {
     const id = parseInt(req.params.id);
     const ds = storage.getDatasetWithOwner(id);
@@ -127,7 +129,310 @@ export async function registerRoutes(
         ip: getClientIp(req),
       });
     } catch {}
+    res.json({ ok: true, softDeleted: true });
+  });
+
+  // سلّة المحذوفات — عرض الملفات المحذوفة (تحسين #14)
+  app.get("/api/datasets/trash/list", requireAuth, (req: any, res) => {
+    const ids = getAccessibleDatasetIds(req.userId, req.userRole);
+    const list = storage.listTrashForUser(ids);
+    res.json({
+      items: list.map((d: any) => ({
+        id: d.id,
+        name: d.name,
+        fileName: d.file_name,
+        rowCount: d.row_count,
+        createdAt: d.created_at,
+        deletedAt: d.deleted_at,
+      })),
+    });
+  });
+
+  // استعادة ملف محذوف
+  app.post("/api/datasets/:id/restore", requireAuth, requireFeature("delete_dataset"), (req: any, res) => {
+    const id = parseInt(req.params.id);
+    const ds = storage.getDatasetWithOwner(id);
+    if (!ds) return res.status(404).json({ error: "غير موجود" });
+    if (req.userRole !== "admin" && ds.owner_id !== req.userId) {
+      return res.status(403).json({ error: "غير مسموح" });
+    }
+    const ok = storage.restoreDataset(id);
+    try {
+      const u = authDb.prepare("SELECT username FROM users WHERE id = ?").get(req.userId) as any;
+      logAudit(req.userId, u?.username || null, "dataset_restored", {
+        targetType: "dataset",
+        targetId: String(id),
+        details: { name: ds.name },
+        ip: getClientIp(req),
+      });
+    } catch {}
+    res.json({ ok });
+  });
+
+  // حذف نهائي (تفريغ)
+  app.delete("/api/datasets/:id/purge", requireAuth, requireFeature("delete_dataset"), (req: any, res) => {
+    const id = parseInt(req.params.id);
+    const ds = storage.getDatasetWithOwner(id);
+    if (!ds) return res.status(404).json({ error: "غير موجود" });
+    if (req.userRole !== "admin" && ds.owner_id !== req.userId) {
+      return res.status(403).json({ error: "غير مسموح" });
+    }
+    storage.purgeDataset(id);
+    try {
+      const u = authDb.prepare("SELECT username FROM users WHERE id = ?").get(req.userId) as any;
+      logAudit(req.userId, u?.username || null, "dataset_purged", {
+        targetType: "dataset",
+        targetId: String(id),
+        details: { name: ds.name },
+        ip: getClientIp(req),
+      });
+    } catch {}
     res.json({ ok: true });
+  });
+
+  // B: بحث عام (عبر datasets و data_rows)
+  app.get("/api/search/global", requireAuth, async (req: any, res) => {
+    const q = String(req.query.q || "").trim().toLowerCase();
+    if (!q || q.length < 2) return res.json({ datasets: [], rows: [] });
+    const limit = Math.min(parseInt(req.query.limit as string) || 30, 100);
+
+    // صلاحيات المستخدم
+    const accessible = await getAccessibleDatasetIds(req.userId, req.userRole);
+    const allowedIds = accessible === "all"
+      ? null
+      : accessible;
+    if (allowedIds && allowedIds.length === 0) return res.json({ datasets: [], rows: [] });
+
+    const like = `%${q}%`;
+
+    // بحث في أسماء/tags الداتاست
+    let dsRows: any[];
+    if (allowedIds) {
+      const placeholders = allowedIds.map(() => "?").join(",");
+      dsRows = authDb.prepare(
+        `SELECT id, name, columns, tags, row_count, created_at FROM datasets
+         WHERE deleted_at IS NULL AND id IN (${placeholders}) AND (LOWER(name) LIKE ? OR LOWER(tags) LIKE ? OR LOWER(columns) LIKE ?)
+         ORDER BY created_at DESC LIMIT ?`
+      ).all(...allowedIds, like, like, like, limit) as any[];
+    } else {
+      dsRows = authDb.prepare(
+        `SELECT id, name, columns, tags, row_count, created_at FROM datasets
+         WHERE deleted_at IS NULL AND (LOWER(name) LIKE ? OR LOWER(tags) LIKE ? OR LOWER(columns) LIKE ?)
+         ORDER BY created_at DESC LIMIT ?`
+      ).all(like, like, like, limit) as any[];
+    }
+
+    // بحث في data_rows.data (JSON نص) — فقط للداتاست المسموح بها
+    let rowsMatched: any[] = [];
+    try {
+      if (allowedIds) {
+        const placeholders = allowedIds.map(() => "?").join(",");
+        rowsMatched = authDb.prepare(
+          `SELECT dr.id, dr.dataset_id, dr.data, d.name as dataset_name FROM data_rows dr
+           JOIN datasets d ON d.id = dr.dataset_id
+           WHERE d.deleted_at IS NULL AND dr.dataset_id IN (${placeholders}) AND LOWER(dr.data) LIKE ?
+           LIMIT ?`
+        ).all(...allowedIds, like, limit) as any[];
+      } else {
+        rowsMatched = authDb.prepare(
+          `SELECT dr.id, dr.dataset_id, dr.data, d.name as dataset_name FROM data_rows dr
+           JOIN datasets d ON d.id = dr.dataset_id
+           WHERE d.deleted_at IS NULL AND LOWER(dr.data) LIKE ?
+           LIMIT ?`
+        ).all(like, limit) as any[];
+      }
+    } catch (e: any) {
+      console.error("global search rows error:", e.message);
+    }
+
+    res.json({
+      datasets: dsRows.map((r) => ({
+        id: r.id,
+        name: r.name,
+        tags: r.tags ? (() => { try { return JSON.parse(r.tags); } catch { return []; } })() : [],
+        rowCount: r.row_count,
+        columns: (() => { try { return JSON.parse(r.columns); } catch { return []; } })(),
+      })),
+      rows: rowsMatched.map((r) => {
+        let snippet = "";
+        try {
+          const parsed = JSON.parse(r.data);
+          const entries = Object.entries(parsed).find(([_, v]) => String(v).toLowerCase().includes(q));
+          if (entries) snippet = `${entries[0]}: ${entries[1]}`;
+        } catch {}
+        return {
+          id: r.id,
+          datasetId: r.dataset_id,
+          datasetName: r.dataset_name,
+          snippet,
+        };
+      }),
+    });
+  });
+
+  // L: tags للداتاست
+  app.get("/api/datasets/:id/tags", requireAuth, requireDatasetAccess, (req: any, res) => {
+    const id = parseInt(req.params.id);
+    const row = authDb.prepare("SELECT tags FROM datasets WHERE id = ?").get(id) as any;
+    let tags: string[] = [];
+    try { tags = row?.tags ? JSON.parse(row.tags) : []; } catch {}
+    res.json({ tags });
+  });
+
+  app.put("/api/datasets/:id/tags", requireAuth, requireDatasetAccess, (req: any, res) => {
+    const id = parseInt(req.params.id);
+    const incoming = Array.isArray(req.body?.tags) ? req.body.tags : [];
+    const tags = incoming
+      .filter((t: any) => typeof t === "string")
+      .map((t: string) => t.trim())
+      .filter((t: string) => t.length > 0 && t.length <= 40)
+      .slice(0, 20);
+    authDb.prepare("UPDATE datasets SET tags = ? WHERE id = ?").run(JSON.stringify(tags), id);
+    res.json({ tags });
+  });
+
+  // قائمة بكل الـ tags المستخدمة (للـ autocomplete)
+  app.get("/api/tags/all", requireAuth, (_req: any, res) => {
+    const rows = authDb.prepare("SELECT tags FROM datasets WHERE tags IS NOT NULL AND deleted_at IS NULL").all() as any[];
+    const set = new Set<string>();
+    for (const r of rows) {
+      try {
+        const arr = JSON.parse(r.tags);
+        if (Array.isArray(arr)) arr.forEach((t: string) => typeof t === "string" && set.add(t));
+      } catch {}
+    }
+    res.json({ tags: Array.from(set).sort() });
+  });
+
+  // A: إصدارات الداتاست (Snapshots) + مقارنة بصرية
+  // إنشاء إصدار (snapshot للصفوف + الأعمدة)
+  app.post("/api/datasets/:id/versions", requireAuth, requireDatasetAccess, (req: any, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      const label = (req.body?.label || "").toString().slice(0, 100);
+      const ds = authDb.prepare("SELECT id, columns FROM datasets WHERE id = ?").get(id) as any;
+      if (!ds) return res.status(404).json({ error: "not found" });
+      const rows = authDb
+        .prepare("SELECT id, row_index, data FROM data_rows WHERE dataset_id = ? ORDER BY row_index ASC")
+        .all(id) as any[];
+      const snapshot = JSON.stringify({
+        columns: ds.columns ? JSON.parse(ds.columns) : [],
+        rows: rows.map((r) => ({
+          id: r.id,
+          rowIndex: r.row_index,
+          data: r.data ? JSON.parse(r.data) : {},
+        })),
+      });
+      const now = Date.now();
+      const info = authDb
+        .prepare(
+          "INSERT INTO dataset_versions (dataset_id, user_id, label, snapshot, columns, row_count, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
+        )
+        .run(id, req.userId || null, label || null, snapshot, ds.columns || null, rows.length, now);
+      res.json({ id: info.lastInsertRowid, createdAt: now, rowCount: rows.length, label });
+    } catch (e: any) {
+      console.error("[versions create] error:", e);
+      res.status(500).json({ error: e?.message || "server error" });
+    }
+  });
+
+  // قائمة إصدارات (بدون snapshot الكامل للسرعة)
+  app.get("/api/datasets/:id/versions", requireAuth, requireDatasetAccess, (req: any, res) => {
+    const id = parseInt(req.params.id);
+    const rows = authDb
+      .prepare(
+        `SELECT v.id, v.label, v.row_count, v.created_at, v.user_id, u.username
+         FROM dataset_versions v
+         LEFT JOIN users u ON u.id = v.user_id
+         WHERE v.dataset_id = ?
+         ORDER BY v.created_at DESC
+         LIMIT 100`
+      )
+      .all(id) as any[];
+    res.json({
+      items: rows.map((r) => ({
+        id: r.id,
+        label: r.label,
+        rowCount: r.row_count,
+        createdAt: r.created_at,
+        userId: r.user_id,
+        username: r.username,
+      })),
+    });
+  });
+
+  // جلب snapshot إصدار واحد للمقارنة
+  app.get("/api/datasets/:id/versions/:vid", requireAuth, requireDatasetAccess, (req: any, res) => {
+    const id = parseInt(req.params.id);
+    const vid = parseInt(req.params.vid);
+    const row = authDb
+      .prepare("SELECT id, label, row_count, created_at, snapshot FROM dataset_versions WHERE id = ? AND dataset_id = ?")
+      .get(vid, id) as any;
+    if (!row) return res.status(404).json({ error: "not found" });
+    try {
+      const snap = JSON.parse(row.snapshot);
+      res.json({
+        id: row.id,
+        label: row.label,
+        rowCount: row.row_count,
+        createdAt: row.created_at,
+        columns: snap.columns || [],
+        rows: snap.rows || [],
+      });
+    } catch (e) {
+      res.status(500).json({ error: "bad snapshot" });
+    }
+  });
+
+  // حذف إصدار
+  app.delete("/api/datasets/:id/versions/:vid", requireAuth, requireDatasetAccess, (req: any, res) => {
+    const id = parseInt(req.params.id);
+    const vid = parseInt(req.params.vid);
+    authDb.prepare("DELETE FROM dataset_versions WHERE id = ? AND dataset_id = ?").run(vid, id);
+    res.json({ ok: true });
+  });
+
+  // سجل نشاط لملف محدد (تحسين #13)
+  app.get("/api/datasets/:id/activity", requireAuth, requireDatasetAccess, (req: any, res) => {
+    const id = parseInt(req.params.id);
+    const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
+    const rows = authDb
+      .prepare(
+        `SELECT id, user_id, username, action, target_type, target_id, details, ip, created_at
+         FROM audit_log
+         WHERE target_type = 'dataset' AND target_id = ?
+         ORDER BY created_at DESC LIMIT ?`
+      )
+      .all(String(id), limit) as any[];
+    res.json({
+      items: rows.map((r) => ({
+        id: r.id,
+        userId: r.user_id,
+        username: r.username,
+        action: r.action,
+        details: r.details ? (() => { try { return JSON.parse(r.details); } catch { return r.details; } })() : null,
+        ip: r.ip,
+        createdAt: r.created_at,
+      })),
+    });
+  });
+
+  // تفضيلات العرض (theme + lang) — محفوظة في DB (تحسين #10)
+  app.get("/api/me/prefs", requireAuth, (req: any, res) => {
+    const u = authDb
+      .prepare("SELECT theme, lang FROM users WHERE id = ?")
+      .get(req.userId) as any;
+    res.json({ theme: u?.theme || null, lang: u?.lang || null });
+  });
+
+  app.put("/api/me/prefs", requireAuth, (req: any, res) => {
+    const { theme, lang } = req.body || {};
+    const validTheme = theme === "light" || theme === "dark" || theme === null ? theme : null;
+    const validLang = lang === "ar" || lang === "en" || lang === null ? lang : null;
+    authDb
+      .prepare("UPDATE users SET theme = COALESCE(?, theme), lang = COALESCE(?, lang) WHERE id = ?")
+      .run(validTheme, validLang, req.userId);
+    res.json({ ok: true, theme: validTheme, lang: validLang });
   });
 
   // مشاركة dataset: جلب قائمة المستخدمين الذين لديهم صلاحية
@@ -239,9 +544,19 @@ export async function registerRoutes(
         }
         const columns = Array.from(columnsSet);
 
+        // إصلاح ترميز اسم الملف العربي (multer يستلمه كـ latin1)
+        let safeFileName = req.file.originalname;
+        try {
+          const decoded = Buffer.from(safeFileName, "latin1").toString("utf8");
+          // إذا احتوى المدخل على بايتات UTF-8 صالحة بعد التحويل وتصبح حروفاً عربية فستخدمه
+          if (/[؀-ۿ]/.test(decoded) && !/[؀-ۿ]/.test(safeFileName)) {
+            safeFileName = decoded;
+          }
+        } catch {}
+
         const dataset = storage.createDataset({
           name,
-          fileName: req.file.originalname,
+          fileName: safeFileName,
           columns: JSON.stringify(columns),
           rowCount: rows.length,
           ownerId: (req as any).userId ?? null,
@@ -279,6 +594,21 @@ export async function registerRoutes(
     sortDir: z.enum(["asc", "desc"]).optional(),
   });
 
+  // 📌 جلب صفوف محددة بحسب IDs — للصفوف المثبّتة (تجاوز الفلاتر)
+  app.post("/api/datasets/:id/rows-by-ids", (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      const ids = (req.body?.ids ?? []) as (string | number)[];
+      const numericIds = ids
+        .map((x) => (typeof x === "number" ? x : parseInt(String(x))))
+        .filter((n) => Number.isFinite(n)) as number[];
+      const rows = storage.getRowsByIds(id, numericIds);
+      res.json({ rows, total: rows.length });
+    } catch (e: any) {
+      res.status(400).json({ error: e.message });
+    }
+  });
+
   app.post("/api/datasets/:id/query", (req, res) => {
     try {
       const id = parseInt(req.params.id);
@@ -295,6 +625,33 @@ export async function registerRoutes(
       res.json(result);
     } catch (e: any) {
       res.status(400).json({ error: e.message });
+    }
+  });
+
+  app.post("/api/datasets/:id/duplicates/preview", requireAuth, requireDatasetAccess, requireFeature("explore"), (req, res) => {
+    try {
+      const options = duplicatePreviewSchema.parse(req.body);
+      res.setHeader("Cache-Control", "private, no-store");
+      res.json(previewDuplicates(Number(req.params.id), options, options.page));
+    } catch (e: any) {
+      res.status(e.status || 400).json({ error: e.message });
+    }
+  });
+  app.post("/api/datasets/:id/duplicates/delete", requireAuth, requireDatasetEdit, requireFeature("edit_rows"), (req: any, res) => {
+    try {
+      const options = duplicateDeleteSchema.parse(req.body);
+      const id = Number(req.params.id);
+      const result = deleteDuplicateCopies(id, req.userId || null, options, options.revision, options.groupKey);
+      try {
+        logAudit(req.userId, null, "duplicates_deleted", {
+          targetType: "dataset", targetId: String(id),
+          details: { ...result, match: options.match, columns: options.columns, keep: options.keep },
+          ip: getClientIp(req),
+        });
+      } catch (e) { console.error("[duplicates audit]", e); }
+      res.json(result);
+    } catch (e: any) {
+      res.status(e.status || 400).json({ error: e.message });
     }
   });
 
@@ -630,6 +987,37 @@ export async function registerRoutes(
   // ===== نسخة احتياطية لقاعدة البيانات (محمية بتوكن) =====
   // تحميل ملف data.db كاملاً. يتطلب Authorization: Bearer <BACKUP_TOKEN>
   // يُستخدم من المهمة المجدولة الأسبوعية.
+  // إصلاح أسماء الملفات العربية المشوّهة (للمدير فقط)
+  app.post("/api/admin/fix-filenames", requireAuth, async (req: any, res) => {
+    try {
+      if (req.userRole !== "admin") {
+        return res.status(403).json({ error: "admin only" });
+      }
+      const rows = authDb
+        .prepare("SELECT id, file_name FROM datasets WHERE file_name IS NOT NULL")
+        .all() as Array<{ id: number; file_name: string }>;
+      let fixed = 0;
+      const updateStmt = authDb.prepare("UPDATE datasets SET file_name = ? WHERE id = ?");
+      for (const r of rows) {
+        if (!r.file_name) continue;
+        // البحث عن mojibake (بايتات UTF-8 فُسّرت كـ latin1)
+        const looksMojibake = /[À-ÿ][-¿]/.test(r.file_name);
+        if (!looksMojibake) continue;
+        try {
+          const fixed_name = Buffer.from(r.file_name, "latin1").toString("utf8");
+          // تحقق: تحوّل فعلاً إلى عربية
+          if (/[؀-ۿ]/.test(fixed_name) && fixed_name !== r.file_name) {
+            updateStmt.run(fixed_name, r.id);
+            fixed++;
+          }
+        } catch {}
+      }
+      res.json({ ok: true, scanned: rows.length, fixed });
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message || "server error" });
+    }
+  });
+
   app.get("/api/admin/backup/db", async (req, res) => {
     try {
       const token = process.env.BACKUP_TOKEN;
@@ -666,6 +1054,45 @@ export async function registerRoutes(
       res.status(500).json({ error: e.message });
     }
   });
+
+  // ===== H: نسخ احتياطي يومي تلقائي =====
+  // ينسخ data.db إلى data.db.backup-YYYYMMDD في نفس المجلد، ويحفظ آخر 7 نسخ
+  try {
+    const path = await import("node:path");
+    const fs = await import("node:fs");
+    const dbPath = path.resolve(process.cwd(), "data.db");
+
+    const runBackup = () => {
+      try {
+        if (!fs.existsSync(dbPath)) return;
+        const date = new Date().toISOString().slice(0, 10).replace(/-/g, "");
+        const backupPath = path.resolve(process.cwd(), `data.db.backup-${date}`);
+        // لا تنسخ إن كانت النسخة اليوم موجودة
+        if (fs.existsSync(backupPath)) return;
+        fs.copyFileSync(dbPath, backupPath);
+        console.log(`[H-backup] نسخة احتياطية تلقائية: ${backupPath}`);
+        // حذف نسخ أقدم من 7 أيام
+        const dir = path.dirname(dbPath);
+        const files = fs.readdirSync(dir).filter(f => f.startsWith("data.db.backup-"));
+        if (files.length > 7) {
+          files.sort(); // ترتيب تصاعدي (الأقدم أولاً)
+          for (const f of files.slice(0, files.length - 7)) {
+            try { fs.unlinkSync(path.join(dir, f)); } catch {}
+          }
+        }
+      } catch (e: any) {
+        console.error("[H-backup] فشل النسخ:", e.message);
+      }
+    };
+
+    // راجع كل ساعة (ينسخ فعلياً مرة في اليوم فقط)
+    setInterval(runBackup, 60 * 60 * 1000);
+    // نسخة أولى بعد 60 ثانية من بدء السيرفر
+    setTimeout(runBackup, 60 * 1000);
+    console.log("[H-backup] جدول النسخ الاحتياطي اليومي مفعّل بفاصل 1 ساعة");
+  } catch (e) {
+    console.error("[H-backup] فشل إعداد الجدول", e);
+  }
 
   return httpServer;
 }

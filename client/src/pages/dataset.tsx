@@ -109,6 +109,7 @@ import {
   Clock,
   Pin,
   PinOff,
+  Copy,
 } from "lucide-react";
 import { LangContext } from "@/lib/i18n";
 import { useAuth } from "@/components/auth-gate";
@@ -119,6 +120,7 @@ import type { FilterCondition } from "@shared/schema";
 // lazy — لوحات ثقيلة
 const PivotPanel = lazy(() => import("@/components/pivot-panel"));
 const ChartPanel = lazy(() => import("@/components/chart-panel"));
+const DuplicatesPanel = lazy(() => import("@/components/duplicates-panel"));
 // lazy load — compare-panel ضخم (يحتوي على PDF/Excel/CSV exports)
 const AdvancedAnalysisPanel = lazy(() => import("@/components/compare-panel"));
 import DatasetActivity from "@/components/dataset-activity";
@@ -135,6 +137,7 @@ interface Dataset {
   fileName: string;
   columns: string[];
   rowCount: number;
+  permission?: "view" | "edit" | "delete";
 }
 
 interface QueryResult {
@@ -816,7 +819,7 @@ export default function DatasetPage({ idProp }: { idProp?: number } = {}) {
 
       <Tabs value={activeTab} onValueChange={setActiveTab}>
         <div className={`flex items-center justify-between gap-2 flex-wrap ${isEmbed ? "hidden" : ""}`}>
-          <TabsList>
+          <TabsList className="h-auto flex-wrap justify-start gap-1">
             {canFeat("explore") && (
             <TabsTrigger value="explore" data-testid="tab-explore">
               <Search className="w-4 h-4 me-2" />
@@ -847,6 +850,10 @@ export default function DatasetPage({ idProp }: { idProp?: number } = {}) {
               {t.compare.title}
             </TabsTrigger>
             )}
+            {canFeat("explore") && <TabsTrigger value="duplicates" data-testid="tab-duplicates">
+              <Copy className="w-4 h-4 me-2" />
+              {lang === "ar" ? "التكرار" : "Duplicates"}
+            </TabsTrigger>}
             <TabsTrigger value="activity" data-testid="tab-activity">
               <Clock className="w-4 h-4 me-2" />
               {lang === "ar" ? "النشاط" : "Activity"}
@@ -1644,6 +1651,11 @@ export default function DatasetPage({ idProp }: { idProp?: number } = {}) {
           </Suspense>
         </TabsContent>
 
+        <TabsContent value="duplicates" className="mt-4">
+          {canFeat("explore") && <Suspense fallback={<div>{t.common.loading}</div>}>
+            <DuplicatesPanel key={id} datasetId={id} datasetName={dataset.name} columns={dataset.columns} permission={dataset.permission} />
+          </Suspense>}
+        </TabsContent>
         <TabsContent value="activity" className="mt-4">
           <DatasetActivity datasetId={id} />
         </TabsContent>
