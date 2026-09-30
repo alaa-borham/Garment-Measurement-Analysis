@@ -1,0 +1,1 @@
+import{b as s}from"./index-2SprDWUH.js";function o(){const{user:e,authEnabled:r}=s();return{canExport:!r||e?.role==="admin"||e?.permissions?.export===!0,canImportTemplates:!r||e?.role==="admin"||e?.permissions?.import_templates===!0}}export{o as u};

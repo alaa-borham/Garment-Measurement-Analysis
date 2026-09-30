@@ -757,7 +757,7 @@ export default function DatasetPage({ idProp }: { idProp?: number } = {}) {
   const fileRowCount = dataset.rowCount ?? 0;
   const matchingRatio = fileRowCount > 0 ? total / fileRowCount : 0;
   const resultLocale = lang === "ar" ? "ar-EG" : "en-US";
-  const matchingPercentage = matchingRatio.toLocaleString(resultLocale, {
+  const matchingPercentage = matchingRatio.toLocaleString("en-US", {
     style: "percent",
     maximumFractionDigits: 2,
   });
@@ -1039,15 +1039,10 @@ export default function DatasetPage({ idProp }: { idProp?: number } = {}) {
                       className="gap-1.5 text-xs tabular-nums"
                       data-testid="badge-results-percentage"
                       title={lang === "ar"
-                        ? "عدد الصفوف المطابقة ÷ إجمالي صفوف الملف × 100، وليس عدد صفوف الصفحة الحالية"
-                        : "All matching rows ÷ total file rows × 100, not just the current page"}
+                        ? `${total.toLocaleString(resultLocale)} من إجمالي ${fileRowCount.toLocaleString(resultLocale)} صف في الملف`
+                        : `${total.toLocaleString(resultLocale)} of ${fileRowCount.toLocaleString(resultLocale)} total file rows`}
                     >
-                      <span data-testid="text-results-percentage">{matchingPercentage}</span>
-                      <span className="font-normal">
-                        {lang === "ar" ? "من إجمالي الملف" : "of total file"}
-                        {" ("}{fileRowCount.toLocaleString(resultLocale)}{" "}
-                        {t.common.rows}{")"}
-                      </span>
+                      <span dir="ltr" data-testid="text-results-percentage">( {matchingPercentage} )</span>
                     </Badge>
                   )}
                 </div>
