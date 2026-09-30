@@ -97,7 +97,7 @@ export default function DashboardPage() {
 
   const ArrowFwd = isAr ? ArrowLeft : ArrowRight;
 
-  const formatNumber = (n: number) => n.toLocaleString(isAr ? "ar-EG" : "en-US");
+  const formatNumber = (n: number | null | undefined) => (n ?? 0).toLocaleString(isAr ? "ar-EG" : "en-US");
   const formatDate = (s: string) => {
     try {
       const d = new Date(s);
@@ -172,8 +172,77 @@ export default function DashboardPage() {
     rows: p.rows,
   }));
 
+  // D: تصدير تقرير dashboard
+  const exportDashboardCSV = () => {
+    if (!can("export")) return;
+    const lines: string[] = [];
+    lines.push("إحصائية,القيمة");
+    const dsCount = data?.totalDatasets ?? 0;
+    const rowsCount = data?.totalRows ?? 0;
+    const colsCount = data?.totalColumns ?? 0;
+    lines.push(`الملفات,${dsCount}`);
+    lines.push(`الصفوف,${rowsCount}`);
+    lines.push(`الأعمدة,${colsCount}`);
+    lines.push(`متوسط الصفوف/ملف,${dsCount > 0 ? Math.round(rowsCount / dsCount) : 0}`);
+    lines.push("");
+    lines.push("توزيع أسبوعي");
+    lines.push("الأسبوع,عدد الملفات,عدد الصفوف");
+    weekly.forEach((w) => lines.push(`${w.label},${w.count},${w.rows}`));
+    lines.push("");
+    lines.push("آخر الملفات");
+    lines.push("الاسم,الصفوف,تاريخ الإنشاء");
+    (data?.recentDatasets || []).forEach((d: any) => {
+      const name = String(d.name).replace(/,/g, " ");
+      lines.push(`${name},${d.rowCount || 0},${new Date(d.createdAt).toLocaleDateString()}`);
+    });
+    const csv = "\uFEFF" + lines.join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `dashboard-${Date.now()}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const exportDashboardPDF = async () => {
+    if (!can("export")) return;
+    const [{ jsPDF }, html2canvas] = await Promise.all([
+      import("jspdf"),
+      import("html2canvas").then((m) => m.default),
+    ]);
+    const el = document.getElementById("dashboard-content");
+    if (!el) return;
+    const canvas = await html2canvas(el, { background: "#ffffff", useCORS: true, scale: 2 } as any);
+    const imgData = canvas.toDataURL("image/png");
+    const pdf = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
+    const pdfWidth = pdf.internal.pageSize.getWidth();
+    const pdfHeight = (canvas.height * pdfWidth) / canvas.width;
+    pdf.addImage(imgData, "PNG", 0, 0, pdfWidth, pdfHeight, undefined, "FAST");
+    pdf.save(`dashboard-${Date.now()}.pdf`);
+  };
+
   return (
-    <div className="space-y-6">
+    <div className="space-y-6" id="dashboard-content">
+      {/* أزرار التصدير */}
+      <div className="flex justify-end gap-2 -mb-2">
+        <button
+          onClick={exportDashboardCSV}
+          className="h-8 px-3 text-xs rounded-md border bg-background hover:bg-accent transition-colors flex items-center gap-1.5"
+          data-testid="dashboard-export-csv"
+          disabled={!can("export")}
+        >
+          📄 CSV
+        </button>
+        <button
+          onClick={exportDashboardPDF}
+          className="h-8 px-3 text-xs rounded-md border bg-background hover:bg-accent transition-colors flex items-center gap-1.5"
+          data-testid="dashboard-export-pdf"
+          disabled={!can("export")}
+        >
+          📑 PDF
+        </button>
+      </div>
       {/* Hero banner */}
       <Card className="overflow-hidden border-2 border-primary/15 relative">
         <CardContent className="p-6 md:p-8 relative">

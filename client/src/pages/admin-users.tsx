@@ -68,9 +68,10 @@ function getRoleVariant(role: string): any {
   return r?.color || "outline";
 }
 
-type FeatureMeta = { ar: string; en: string; group: "data" | "view" | "admin" };
+type FeatureMeta = { ar: string; en: string; group: "transfer" | "data" | "view" | "admin"; descriptionAr?: string; descriptionEn?: string };
 const FEATURE_LABELS: Record<string, FeatureMeta> = {
-  upload: { ar: "رفع الملفات", en: "Upload files", group: "data" },
+  upload: { ar: "استيراد الملفات (رفع الملفات)", en: "Import files (upload)", group: "transfer", descriptionAr: "رفع ملفات Excel وCSV وإضافتها إلى النظام.", descriptionEn: "Upload Excel and CSV datasets." },
+  import_templates: { ar: "استيراد قوالب التحليل", en: "Import analysis templates", group: "transfer", descriptionAr: "تحميل قوالب JSON في التحليل المتقدم، مستقلة عن رفع ملفات البيانات.", descriptionEn: "Import JSON templates in advanced analysis, independently of dataset uploads." },
   explore: { ar: "استعراض البيانات", en: "Explore data", group: "view" },
   analyze: { ar: "تحليل أساسي", en: "Basic analysis", group: "view" },
   pivot: { ar: "جداول محورية", en: "Pivot tables", group: "view" },
@@ -79,13 +80,14 @@ const FEATURE_LABELS: Record<string, FeatureMeta> = {
   compare_files: { ar: "مقارنة الملفات", en: "Compare files", group: "view" },
   multi_analysis: { ar: "تحليل متعدد الملفات", en: "Multi-file analysis", group: "view" },
   templates: { ar: "القوالب", en: "Templates", group: "view" },
-  export: { ar: "التصدير", en: "Export", group: "data" },
+  export: { ar: "التصدير", en: "Export", group: "transfer", descriptionAr: "تنزيل البيانات ونتائج التحليل والتقارير والقوالب.", descriptionEn: "Download data, analysis results, reports and templates." },
   edit_rows: { ar: "تعديل الصفوف", en: "Edit rows", group: "data" },
   delete_dataset: { ar: "حذف الملفات", en: "Delete datasets", group: "admin" },
   share_dataset: { ar: "مشاركة الملفات", en: "Share datasets", group: "admin" },
   comments: { ar: "التعليقات", en: "Comments", group: "view" },
 };
 const GROUP_LABELS: Record<string, { ar: string; en: string }> = {
+  transfer: { ar: "الاستيراد والتصدير", en: "Import & Export" },
   data: { ar: "البيانات", en: "Data" },
   view: { ar: "العرض والتحليل", en: "View & Analysis" },
   admin: { ar: "إدارة", en: "Admin" },
@@ -848,7 +850,7 @@ export default function AdminUsersPage() {
                 </Button>
               </div>
 
-              {(["data", "view", "admin"] as const).map((group) => {
+              {(["transfer", "data", "view", "admin"] as const).map((group) => {
                 const feats = permsList.filter(
                   (f) => FEATURE_LABELS[f]?.group === group,
                 );
@@ -870,6 +872,7 @@ export default function AdminUsersPage() {
                           >
                             <input
                               type="checkbox"
+                              data-testid={`permission-${f}`}
                               checked={checked}
                               onChange={(e) =>
                                 setPermsValues((prev) => ({
@@ -881,6 +884,11 @@ export default function AdminUsersPage() {
                             />
                             <span className="flex-1">
                               {isAr ? meta.ar : meta.en}
+                              {meta.descriptionAr && (
+                                <span className="block text-xs text-muted-foreground mt-1">
+                                  {isAr ? meta.descriptionAr : meta.descriptionEn}
+                                </span>
+                              )}
                             </span>
                             {checked !== def && (
                               <Badge variant="outline" className="text-[10px]">

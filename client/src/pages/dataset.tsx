@@ -1,4 +1,4 @@
-import { useContext, useEffect, useState } from "react";
+import { useContext, useEffect, useState, useMemo, useCallback, useRef, lazy, Suspense } from "react";
 import { useRoute, useLocation, Link } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Card, CardContent } from "@/components/ui/card";
@@ -106,15 +106,23 @@ import {
   ArrowUpAZ,
   ArrowDownAZ,
   Sparkles,
+  Clock,
+  Pin,
+  PinOff,
 } from "lucide-react";
 import { LangContext } from "@/lib/i18n";
 import { useAuth } from "@/components/auth-gate";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import type { FilterCondition } from "@shared/schema";
-import PivotPanel from "@/components/pivot-panel";
-import ChartPanel from "@/components/chart-panel";
-import AdvancedAnalysisPanel from "@/components/compare-panel";
+// lazy — لوحات ثقيلة
+const PivotPanel = lazy(() => import("@/components/pivot-panel"));
+const ChartPanel = lazy(() => import("@/components/chart-panel"));
+// lazy load — compare-panel ضخم (يحتوي على PDF/Excel/CSV exports)
+const AdvancedAnalysisPanel = lazy(() => import("@/components/compare-panel"));
+import DatasetActivity from "@/components/dataset-activity";
+import { TagsEditor } from "@/components/tags-editor";
+import { DatasetVersions } from "@/components/dataset-versions";
 import SavedFiltersPanel from "@/components/saved-filters";
 import { Table2 } from "lucide-react";
 import { useOpenTabs } from "@/lib/open-tabs";
@@ -245,6 +253,7 @@ export default function DatasetPage({ idProp }: { idProp?: number } = {}) {
     return authUser.permissions[f] !== false;
   };
   const [editingRow, setEditingRow] = useState<{ id: number | null; data: Record<string, any> } | null>(null);
+  const [inlineCell, setInlineCell] = useState<{ rowId: number; col: string; value: string } | null>(null);
   const [convertOpen, setConvertOpen] = useState(false);
   const [convertColumns, setConvertColumns] = useState<string[]>([]);
   const [convertDirection, setConvertDirection] = useState<"in_to_cm" | "cm_to_in">("in_to_cm");
@@ -259,6 +268,53 @@ export default function DatasetPage({ idProp }: { idProp?: number } = {}) {
   const [dragOverColumn, setDragOverColumn] = useState<string | null>(null);
   // إخفاء الأعمدة
   const [hiddenColumns, setHiddenColumns] = useState<Set<string>>(new Set());
+  // تثبيت الأعمدة (sticky) — محفوظ في localStorage حسب dataset id
+  const [pinnedColumns, setPinnedColumns] = useState<string[]>([]);
+  // تثبيت الصفوف (sticky) — نخزّن row ids
+  const [pinnedRows, setPinnedRows] = useState<string[]>([]);
+
+  // تحميل الأعمدة المثبتة من localStorage
+  useEffect(() => {
+    if (!id) return;
+    try {
+      const raw = localStorage.getItem(`qiyasat-pinned-${id}`);
+      if (raw) setPinnedColumns(JSON.parse(raw));
+      const rawRows = localStorage.getItem(`qiyasat-pinned-rows-${id}`);
+      if (rawRows) setPinnedRows(JSON.parse(rawRows));
+    } catch {}
+  }, [id]);
+
+  // حفظ الأعمدة المثبتة
+  useEffect(() => {
+    if (!id) return;
+    try {
+      localStorage.setItem(`qiyasat-pinned-${id}`, JSON.stringify(pinnedColumns));
+    } catch {}
+  }, [id, pinnedColumns]);
+
+  // حفظ الصفوف المثبتة
+  useEffect(() => {
+    if (!id) return;
+    try {
+      localStorage.setItem(`qiyasat-pinned-rows-${id}`, JSON.stringify(pinnedRows));
+    } catch {}
+  }, [id, pinnedRows]);
+
+  const togglePinColumn = useCallback((col: string) => {
+    setPinnedColumns((prev) =>
+      prev.includes(col) ? prev.filter((c) => c !== col) : [...prev, col]
+    );
+  }, []);
+
+  const togglePinRow = useCallback((rowId: string) => {
+    setPinnedRows((prev) =>
+      prev.includes(rowId) ? prev.filter((r) => r !== rowId) : [...prev, rowId]
+    );
+  }, []);
+
+  // عرض تقديري للأعمدة المثبتة
+  const PIN_COL_WIDTH = 110;
+  const NUM_COL_WIDTH = 40;
 
   const { data: dataset, isLoading: dsLoading } = useQuery<Dataset>({
     queryKey: ["/api/datasets", id],
@@ -291,9 +347,55 @@ export default function DatasetPage({ idProp }: { idProp?: number } = {}) {
     });
   }, [dataset?.id, dataset?.columns]);
 
-  const orderedColumns = columnOrder ?? dataset?.columns ?? [];
-  const visibleColumns = orderedColumns.filter((c) => !hiddenColumns.has(c));
-  const hiddenList = orderedColumns.filter((c) => hiddenColumns.has(c));
+  const orderedColumns = useMemo(
+    () => columnOrder ?? dataset?.columns ?? [],
+    [columnOrder, dataset?.columns]
+  );
+  // الأعمدة المثبتة أولاً (بترتيب إضافتها) ثم الباقي
+  const visibleColumnsRaw = useMemo(
+    () => orderedColumns.filter((c) => !hiddenColumns.has(c)),
+    [orderedColumns, hiddenColumns]
+  );
+  const pinnedVisible = useMemo(
+    () => pinnedColumns.filter((c) => visibleColumnsRaw.includes(c)),
+    [pinnedColumns, visibleColumnsRaw]
+  );
+  const unpinnedVisible = useMemo(
+    () => visibleColumnsRaw.filter((c) => !pinnedColumns.includes(c)),
+    [pinnedColumns, visibleColumnsRaw]
+  );
+  const visibleColumns = useMemo(
+    () => [...pinnedVisible, ...unpinnedVisible],
+    [pinnedVisible, unpinnedVisible]
+  );
+  const hiddenList = useMemo(
+    () => orderedColumns.filter((c) => hiddenColumns.has(c)),
+    [orderedColumns, hiddenColumns]
+  );
+
+  // إرجاع style للخلية المثبتة (RTL: نستخدم right، LTR: left)
+  const isRtl = lang === "ar";
+  const isAr = lang === "ar";
+  const getPinStyle = useCallback(
+    (col: string, base: React.CSSProperties = {}): React.CSSProperties => {
+      return base;
+    },
+    []
+  );
+  // إرجاع فهرس العمود المثبّت (للكلاس)
+  const getPinIndex = useCallback(
+    (col: string): number => pinnedVisible.indexOf(col),
+    [pinnedVisible]
+  );
+  // كلاس CSS للخلية المثبتة (رأس أو جسم)
+  const getPinClass = useCallback(
+    (col: string, kind: "head" | "body"): string => {
+      const idx = getPinIndex(col);
+      if (idx === -1) return "";
+      return `qiyasat-pinned-cell qiyasat-pinned-cell-${idx} ${kind === "head" ? "qiyasat-pinned-head" : "qiyasat-pinned-body"}`;
+    },
+    [getPinIndex]
+  );
 
   const hideColumn = (c: string) => {
     setHiddenColumns((prev) => {
@@ -365,10 +467,99 @@ export default function DatasetPage({ idProp }: { idProp?: number } = {}) {
     },
   });
 
+  // 📌 جلب الصفوف المثبّتة بشكل مستقل (بدون أي فلاتر) — عبر endpoint مخصص
+  // لتبقى ظاهرة دائمًا حتى لو لم تطابق الشروط المطبّقة
+  const pinnedRowsQuery = useQuery<QueryResult>({
+    queryKey: ["dataset-pinned-rows", id, pinnedRows.join(",")],
+    enabled: !!id && !!dataset && pinnedRows.length > 0,
+    queryFn: async () => {
+      const res = await apiRequest("POST", `/api/datasets/${id}/rows-by-ids`, {
+        ids: pinnedRows,
+      });
+      return res.json();
+    },
+  });
+
   const statsQuery = useQuery<Stats>({
     queryKey: ["/api/datasets", id, "stats", statsColumn],
     enabled: !!id && !!statsColumn,
   });
+
+  // خريطة خلفيات الخلايا محسوبة مرة واحدة (بدلاً من mergeHighlights() في كل render)
+  const cellBackgrounds = useMemo(() => {
+    const map: Record<string, string | undefined> = {};
+    const rows = rowsQuery.data?.rows;
+    if (rows && (Object.keys(rowHighlights).length > 0 || Object.keys(colHighlights).length > 0)) {
+      for (const r of rows) {
+        for (const c of visibleColumns) {
+          const bg = mergeHighlights(rowHighlights[r.id], colHighlights[c]);
+          if (bg) map[`${r.id}|${c}`] = bg;
+        }
+      }
+    }
+    return map;
+  }, [rowsQuery.data?.rows, visibleColumns, rowHighlights, colHighlights]);
+
+  // ترتيب الصفوف: المثبتة تبقى في موقعها الأصلي حسب id — لا تتغير عند تطبيق أي شرط
+  const orderedRows = useMemo(() => {
+    const filteredRows = rowsQuery.data?.rows || [];
+    if (pinnedRows.length === 0) return filteredRows;
+    const pinnedSet = new Set(pinnedRows);
+
+    // اجمع كل الصفوف (الفلتر + المثبتة الإضافية) في Map بدون تكرار
+    const allRowsMap = new Map<string, typeof filteredRows[number]>();
+    for (const r of filteredRows) {
+      allRowsMap.set(String(r.id), r);
+    }
+    const pinnedFromExtra = pinnedRowsQuery.data?.rows || [];
+    for (const r of pinnedFromExtra) {
+      const k = String(r.id);
+      if (!allRowsMap.has(k)) allRowsMap.set(k, r);
+    }
+
+    // رتّب الكل حسب id الأصلي تصاعدياً — الصفوف المثبتة تبقى في موقعها الطبيعي
+    const merged = Array.from(allRowsMap.values()).sort((a, b) => {
+      const ai = Number(a.id);
+      const bi = Number(b.id);
+      return ai - bi;
+    });
+
+    // احتفظ فقط بـ: الصفوف المطابقة للفلتر + الصفوف المثبتة (حتى لو لم تطابق)
+    const filteredIds = new Set(filteredRows.map((r) => String(r.id)));
+    return merged.filter((r) => filteredIds.has(String(r.id)) || pinnedSet.has(String(r.id)));
+  }, [rowsQuery.data?.rows, pinnedRowsQuery.data?.rows, pinnedRows]);
+
+  // فهرس الصف المثبّت (0, 1, 2, ...)
+  const getPinRowIndex = useCallback(
+    (rowId: string | number): number => pinnedRows.indexOf(String(rowId)),
+    [pinnedRows]
+  );
+
+  const getPinRowClass = useCallback(
+    (rowId: string | number): string => {
+      const idx = getPinRowIndex(rowId);
+      if (idx === -1) return "";
+      return `qiyasat-pinned-row qiyasat-pinned-row-${idx}`;
+    },
+    [getPinRowIndex]
+  );
+
+  // قياس ديناميكي لارتفاع رأس الجدول — يجعل الصفوف المثبتة ملاصقة تماماً
+  const tableHeaderRef = useRef<HTMLTableSectionElement>(null);
+  useEffect(() => {
+    if (!tableHeaderRef.current) return;
+    const el = tableHeaderRef.current;
+    const updateHeight = () => {
+      const h = el.getBoundingClientRect().height;
+      if (h > 0) {
+        document.documentElement.style.setProperty("--table-header-h", `${Math.round(h)}px`);
+      }
+    };
+    updateHeight();
+    const ro = new ResizeObserver(updateHeight);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [rowsQuery.data?.rows, visibleColumns.length]);
 
   const updateRowMutation = useMutation({
     mutationFn: async ({ rowId, data }: { rowId: number; data: Record<string, any> }) => {
@@ -525,6 +716,7 @@ export default function DatasetPage({ idProp }: { idProp?: number } = {}) {
   };
 
   const handleExport = async () => {
+    if (!canFeat("export")) return;
     const res = await fetch(
       "__PORT_5000__".startsWith("__")
         ? `/api/datasets/${id}/export`
@@ -538,6 +730,13 @@ export default function DatasetPage({ idProp }: { idProp?: number } = {}) {
         }),
       }
     );
+    if (!res.ok) {
+      toast({
+        title: lang === "ar" ? "تعذر التصدير، تحقق من صلاحياتك" : "Export failed. Check your permissions.",
+        variant: "destructive",
+      });
+      return;
+    }
     const blob = await res.blob();
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -584,16 +783,23 @@ export default function DatasetPage({ idProp }: { idProp?: number } = {}) {
                 {dataset.name}
               </h1>
               <Badge variant="secondary" className="text-[10px] shrink-0" data-testid="badge-total-rows">
-                {dataset.rowCount.toLocaleString(lang === "ar" ? "ar-EG" : "en-US")} {t.common.rows}
+                {(dataset.rowCount ?? 0).toLocaleString(lang === "ar" ? "ar-EG" : "en-US")} {t.common.rows}
               </Badge>
               <Badge variant="outline" className="text-[10px] shrink-0">
-                {dataset.columns.length} {t.common.columns}
+                {(dataset.columns?.length ?? 0)} {t.common.columns}
               </Badge>
             </div>
-            <Button variant="outline" size="sm" onClick={handleExport} data-testid="button-export">
-              <Download className="w-4 h-4 me-2" />
-              {t.common.export}
-            </Button>
+            <div className="flex items-center gap-2 shrink-0">
+              <DatasetVersions datasetId={id} />
+              <Button variant="outline" size="sm" onClick={handleExport} data-testid="button-export">
+                <Download className="w-4 h-4 me-2" />
+                {t.common.export}
+              </Button>
+            </div>
+          </div>
+          {/* L: Tags editor */}
+          <div className="mt-2">
+            <TagsEditor datasetId={id} />
           </div>
         </div>
       )}
@@ -631,6 +837,10 @@ export default function DatasetPage({ idProp }: { idProp?: number } = {}) {
               {t.compare.title}
             </TabsTrigger>
             )}
+            <TabsTrigger value="activity" data-testid="tab-activity">
+              <Clock className="w-4 h-4 me-2" />
+              {lang === "ar" ? "النشاط" : "Activity"}
+            </TabsTrigger>
           </TabsList>
         </div>
 
@@ -726,7 +936,8 @@ export default function DatasetPage({ idProp }: { idProp?: number } = {}) {
                                 applyFilters();
                               }
                             }}
-                            placeholder={t.explore.value}
+                            placeholder={["equals", "not_equals", "contains", "not_contains"].includes(c.operator) ? (isAr ? "مثال: L+XL+XXL" : "e.g. L+XL+XXL") : t.explore.value}
+                            title={["equals", "not_equals", "contains", "not_contains"].includes(c.operator) ? (isAr ? "يمكن إدخال عدة قيم مفصولة بـ + أو , (OR داخلي)" : "You can enter multiple values separated by + or , (internal OR)") : undefined}
                             className="h-8 flex-1 min-w-[8rem]"
                             data-testid={`input-value-${i}`}
                             autoFocus={i === conditions.length - 1 && !c.value}
@@ -809,7 +1020,7 @@ export default function DatasetPage({ idProp }: { idProp?: number } = {}) {
               <div className="flex items-center justify-between px-4 py-3 border-b">
                 <div className="text-sm">
                   <span className="font-medium" data-testid="text-results-count">
-                    {total.toLocaleString(lang === "ar" ? "ar-EG" : "en-US")}
+                    {(total ?? 0).toLocaleString(lang === "ar" ? "ar-EG" : "en-US")}
                   </span>{" "}
                   <span className="text-muted-foreground">{t.explore.results}</span>
                 </div>
@@ -947,7 +1158,7 @@ export default function DatasetPage({ idProp }: { idProp?: number } = {}) {
                   <div className="p-8 text-center text-muted-foreground">{t.explore.noResults}</div>
                 ) : (
                   <table className="w-auto caption-bottom text-sm border-separate border-spacing-0">
-                    <TableHeader className="[&_tr]:border-b [&_th]:sticky [&_th]:top-0 [&_th]:bg-primary [&_th]:text-primary-foreground [&_th]:z-20 [&_th]:px-2 [&_th]:h-auto [&_th]:py-2 [&_th]:border-b-[3px] [&_th]:border-b-primary [&_th]:border-s-[3px] [&_th]:border-s-primary-foreground/30 [&_th:first-child]:border-s-0">
+                    <TableHeader ref={tableHeaderRef} className="[&_tr]:border-b [&_th]:sticky [&_th]:top-0 [&_th]:bg-primary [&_th]:text-primary-foreground [&_th]:z-20 [&_th]:px-2 [&_th]:h-auto [&_th]:py-2 [&_th]:border-b-[3px] [&_th]:border-b-primary [&_th]:border-s-[3px] [&_th]:border-s-primary-foreground/30 [&_th:first-child]:border-s-0">
                       <TableRow>
                         <TableHead className="w-10 sticky start-0 z-30 bg-primary text-primary-foreground border-e-[3px] border-e-primary-foreground/40 font-bold text-base" style={{ textShadow: '0 1px 2px rgba(0,0,0,0.25)' }}>#</TableHead>
                         {visibleColumns.map((c) => {
@@ -957,10 +1168,12 @@ export default function DatasetPage({ idProp }: { idProp?: number } = {}) {
                           <ContextMenu key={c}>
                             <ContextMenuTrigger asChild>
                               <TableHead
-                                className={`align-top max-w-[110px] min-w-[80px] transition-colors ${
+                                className={`align-top transition-colors ${
+                                  pinnedColumns.includes(c) ? getPinClass(c, "head") + " ring-2 ring-amber-300 dark:ring-amber-400 shadow-[6px_0_8px_-4px_rgba(0,0,0,0.4)]" : "max-w-[110px] min-w-[80px]"
+                                } ${
                                   isOver ? "bg-primary/10 outline outline-2 outline-primary/40" : ""
                                 } ${isDragging ? "opacity-40" : ""}`}
-                                style={{ background: !isOver ? colHighlights[c] : undefined }}
+                                style={{ background: !pinnedColumns.includes(c) && !isOver ? colHighlights[c] : undefined, top: 0 }}
                                 draggable
                                 onDragStart={(e) => {
                                   setDragColumn(c);
@@ -989,6 +1202,9 @@ export default function DatasetPage({ idProp }: { idProp?: number } = {}) {
                                 data-testid={`th-col-${c}`}
                               >
                                 <div className="flex items-center justify-center gap-1">
+                                  {pinnedColumns.includes(c) && (
+                                    <Pin className="w-4 h-4 text-white drop-shadow shrink-0 rotate-45" fill="currentColor" />
+                                  )}
                                   <GripVertical
                                     className="w-3 h-3 mt-0.5 opacity-50 hover:opacity-100 cursor-grab active:cursor-grabbing shrink-0 text-primary-foreground"
                                     aria-label={t.explore.dragColumn}
@@ -1077,6 +1293,23 @@ export default function DatasetPage({ idProp }: { idProp?: number } = {}) {
                               )}
                               <ContextMenuSeparator />
                               <ContextMenuItem
+                                onClick={() => togglePinColumn(c)}
+                                data-testid={`menuitem-pin-col-${c}`}
+                              >
+                                {pinnedColumns.includes(c) ? (
+                                  <>
+                                    <PinOff className="w-3.5 h-3.5 me-2" />
+                                    {isAr ? "إلغاء تثبيت العمود" : "Unpin column"}
+                                  </>
+                                ) : (
+                                  <>
+                                    <Pin className="w-3.5 h-3.5 me-2" />
+                                    {isAr ? "تثبيت العمود" : "Pin column"}
+                                  </>
+                                )}
+                              </ContextMenuItem>
+                              <ContextMenuSeparator />
+                              <ContextMenuItem
                                 onClick={() => hideColumn(c)}
                                 data-testid={`menuitem-hide-col-${c}`}
                               >
@@ -1099,67 +1332,126 @@ export default function DatasetPage({ idProp }: { idProp?: number } = {}) {
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {rowsQuery.data.rows.map((r) => (
+                      {orderedRows.map((r) => {
+                        const isPinnedRow = pinnedRows.includes(String(r.id));
+                        const pinRowCls = isPinnedRow ? getPinRowClass(r.id) : "";
+                        return (
                         <TableRow
                           key={r.id}
                           data-testid={`row-${r.id}`}
-                          className="group [&_td]:border-s-[3px] [&_td]:border-s-foreground/25 [&_td]:border-b-[2px] [&_td]:border-b-foreground/15 [&_td:first-child]:border-s-0"
+                          className={`group [&_td]:border-s-[3px] [&_td]:border-s-foreground/25 [&_td]:border-b-[2px] [&_td]:border-b-foreground/15 [&_td:first-child]:border-s-0 ${isPinnedRow ? "qiyasat-pinned-row-tr" : ""}`}
                           style={{ background: rowHighlights[r.id] }}
                         >
-                          <TableCell
-                            className="text-primary-foreground text-xs relative w-10 sticky start-0 z-10 border-e-[3px] border-e-primary-foreground/30 bg-primary/90"
-                            style={rowHighlights[r.id] ? { background: rowHighlights[r.id] } : undefined}
-                          >
-                            <div className="flex items-center justify-between gap-1">
-                              <ColorPickerPopover
-                                label={t.explore.highlightRow}
-                                clearLabel={t.explore.clearHighlights}
-                                currentColor={rowHighlights[r.id]}
-                                onPick={(bg) =>
-                                  setRowHighlights((prev) => ({ ...prev, [r.id]: bg }))
-                                }
-                                onClear={() =>
-                                  setRowHighlights((prev) => {
-                                    const next = { ...prev };
-                                    delete next[r.id];
-                                    return next;
-                                  })
-                                }
+                          <ContextMenu>
+                            <ContextMenuTrigger asChild>
+                              <TableCell
+                                className={`text-primary-foreground text-xs relative w-10 sticky start-0 z-10 border-e-[3px] border-e-primary-foreground/30 bg-primary/90 ${pinRowCls}`}
+                                style={rowHighlights[r.id] ? { background: rowHighlights[r.id] } : undefined}
                               >
-                                <button
-                                  type="button"
-                                  className="flex items-center gap-1 hover:text-primary transition-colors"
-                                  data-testid={`button-highlight-row-${r.id}`}
-                                >
-                                  <Palette className="w-3 h-3 opacity-30 group-hover:opacity-100" />
-                                  <span>{r.rowIndex + 1}</span>
-                                </button>
-                              </ColorPickerPopover>
-                              <RowActionsMenu
-                                rowId={r.id}
-                                onEdit={() => startEditRow(r)}
-                                onDelete={() => deleteRowMutation.mutate(r.id)}
-                                t={t}
-                              />
-                            </div>
-                          </TableCell>
-                          {visibleColumns.map((c) => (
+                                <div className="flex items-center justify-between gap-1">
+                                  {isPinnedRow && (
+                                    <Pin className="w-3 h-3 text-white drop-shadow shrink-0 rotate-45" fill="currentColor" />
+                                  )}
+                                  <ColorPickerPopover
+                                    label={t.explore.highlightRow}
+                                    clearLabel={t.explore.clearHighlights}
+                                    currentColor={rowHighlights[r.id]}
+                                    onPick={(bg) =>
+                                      setRowHighlights((prev) => ({ ...prev, [r.id]: bg }))
+                                    }
+                                    onClear={() =>
+                                      setRowHighlights((prev) => {
+                                        const next = { ...prev };
+                                        delete next[r.id];
+                                        return next;
+                                      })
+                                    }
+                                  >
+                                    <button
+                                      type="button"
+                                      className="flex items-center gap-1 hover:text-primary transition-colors"
+                                      data-testid={`button-highlight-row-${r.id}`}
+                                    >
+                                      <Palette className="w-3 h-3 opacity-30 group-hover:opacity-100" />
+                                      <span>{r.rowIndex + 1}</span>
+                                    </button>
+                                  </ColorPickerPopover>
+                                  <RowActionsMenu
+                                    rowId={r.id}
+                                    onEdit={() => startEditRow(r)}
+                                    onDelete={() => deleteRowMutation.mutate(r.id)}
+                                    t={t}
+                                  />
+                                </div>
+                              </TableCell>
+                            </ContextMenuTrigger>
+                            <ContextMenuContent className="min-w-[180px]">
+                              <ContextMenuItem onClick={() => togglePinRow(String(r.id))}>
+                                {isPinnedRow ? (
+                                  <><PinOff className="w-4 h-4 me-2" /> {isAr ? "إلغاء تثبيت الصف" : "Unpin row"}</>
+                                ) : (
+                                  <><Pin className="w-4 h-4 me-2" /> {isAr ? "تثبيت الصف" : "Pin row"}</>
+                                )}
+                              </ContextMenuItem>
+                            </ContextMenuContent>
+                          </ContextMenu>
+                          {visibleColumns.map((c) => {
+                            const isEditing = inlineCell?.rowId === r.id && inlineCell?.col === c;
+                            const canEdit = canFeat("edit_rows");
+                            return (
                             <TableCell
                               key={c}
-                              className="whitespace-nowrap text-sm px-2 py-2 max-w-[110px] truncate"
-                              style={{
-                                background: mergeHighlights(
-                                  rowHighlights[r.id],
-                                  colHighlights[c]
-                                ),
-                              }}
+                              className={`whitespace-nowrap text-sm px-2 py-2 truncate ${
+                                pinnedColumns.includes(c)
+                                  ? getPinClass(c, "body") + " border-s-[3px] border-s-amber-500 dark:border-s-amber-400 shadow-[6px_0_8px_-4px_rgba(0,0,0,0.25)] font-semibold"
+                                  : "max-w-[110px]"
+                              } ${pinRowCls}`}
+                              style={!pinnedColumns.includes(c) ? { background: cellBackgrounds[`${r.id}|${c}`] } : undefined}
                               title={String(r.data[c] ?? "")}
+                              onDoubleClick={() => {
+                                if (!canEdit) return;
+                                setInlineCell({ rowId: r.id, col: c, value: String(r.data[c] ?? "") });
+                              }}
+                              data-testid={`cell-${r.id}-${c}`}
                             >
-                              {String(r.data[c] ?? "")}
+                              {isEditing ? (
+                                <input
+                                  autoFocus
+                                  type="text"
+                                  value={inlineCell!.value}
+                                  onChange={(e) =>
+                                    setInlineCell({ ...inlineCell!, value: e.target.value })
+                                  }
+                                  onBlur={() => {
+                                    const newVal = inlineCell!.value;
+                                    const oldVal = String(r.data[c] ?? "");
+                                    if (newVal !== oldVal) {
+                                      updateRowMutation.mutate({
+                                        rowId: r.id,
+                                        data: { ...r.data, [c]: newVal },
+                                      });
+                                    }
+                                    setInlineCell(null);
+                                  }}
+                                  onKeyDown={(e) => {
+                                    if (e.key === "Enter") {
+                                      (e.target as HTMLInputElement).blur();
+                                    } else if (e.key === "Escape") {
+                                      setInlineCell(null);
+                                    }
+                                  }}
+                                  className="w-full bg-background border border-primary rounded px-1 py-0.5 text-sm outline-none"
+                                  data-testid={`inline-input-${r.id}-${c}`}
+                                />
+                              ) : (
+                                String(r.data[c] ?? "")
+                              )}
                             </TableCell>
-                          ))}
+                            );
+                          })}
                         </TableRow>
-                      ))}
+                        );
+                      })}
                     </TableBody>
                   </table>
                 )}
@@ -1311,15 +1603,25 @@ export default function DatasetPage({ idProp }: { idProp?: number } = {}) {
         </TabsContent>
 
         <TabsContent value="pivot" className="mt-4">
-          <PivotPanel datasetId={id} columns={dataset.columns} />
+          <Suspense fallback={<div className="flex items-center justify-center py-12"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div></div>}>
+            <PivotPanel datasetId={id} columns={dataset.columns} />
+          </Suspense>
         </TabsContent>
 
         <TabsContent value="chart" className="mt-4">
-          <ChartPanel datasetId={id} columns={dataset.columns} />
+          <Suspense fallback={<div className="flex items-center justify-center py-12"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div></div>}>
+            <ChartPanel datasetId={id} columns={dataset.columns} />
+          </Suspense>
         </TabsContent>
 
         <TabsContent value="compare" className="mt-4">
-          <AdvancedAnalysisPanel datasetId={id} columns={dataset.columns} />
+          <Suspense fallback={<div className="flex items-center justify-center py-12"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div></div>}>
+            <AdvancedAnalysisPanel datasetId={id} columns={dataset.columns} />
+          </Suspense>
+        </TabsContent>
+
+        <TabsContent value="activity" className="mt-4">
+          <DatasetActivity datasetId={id} />
         </TabsContent>
       </Tabs>
 
@@ -1665,7 +1967,7 @@ function StatCard({
     <div className="rounded-lg border bg-card p-3" data-testid={`stat-${label}`}>
       <div className="text-xs text-muted-foreground mb-1">{label}</div>
       <div className="text-base font-bold font-mono">
-        {value.toLocaleString(lang === "ar" ? "ar-EG" : "en-US")}
+        {(value ?? 0).toLocaleString(lang === "ar" ? "ar-EG" : "en-US")}
       </div>
     </div>
   );

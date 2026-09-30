@@ -3,6 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
+import { useTransferPermissions } from "@/hooks/use-transfer-permissions";
 import { useLocation } from "wouter";
 import { LangContext } from "@/lib/i18n";
 import { FileText, Ruler, Shirt, Trees, Settings, Download } from "lucide-react";
@@ -130,6 +131,7 @@ const TEMPLATES: Template[] = [
 ];
 
 export default function TemplatesPage() {
+  const { canExport } = useTransferPermissions();
   const { lang } = useContext(LangContext);
   const isAr = lang === "ar";
   const { toast } = useToast();
@@ -137,6 +139,7 @@ export default function TemplatesPage() {
   const [creating, setCreating] = useState<string | null>(null);
 
   const downloadCSV = (tpl: Template) => {
+    if (!canExport) return;
     const header = tpl.columns.map((c) => c.name).join(",");
     const rows = tpl.sampleRows.map((r) =>
       tpl.columns.map((c) => r[c.name] ?? "").join(",")
@@ -169,7 +172,12 @@ export default function TemplatesPage() {
       form.append("file", file);
       form.append("name", isAr ? tpl.name.ar : tpl.name.en);
 
-      const res = await fetch("/api/datasets", { method: "POST", body: form });
+      const token = localStorage.getItem("qiyasat_auth_token");
+      const res = await fetch("/api/datasets/upload", {
+        method: "POST",
+        body: form,
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
       if (res.ok) {
         const data = await res.json();
         toast({ title: isAr ? "تم إنشاء الملف" : "Dataset created" });
@@ -247,7 +255,7 @@ export default function TemplatesPage() {
                       ? "إنشاء ملف"
                       : "Create"}
                   </Button>
-                  <Button size="sm" variant="outline" onClick={() => downloadCSV(tpl)} className="gap-1">
+                  <Button size="sm" variant="outline" onClick={() => downloadCSV(tpl)} disabled={!canExport} className="gap-1">
                     <Download className="w-3 h-3" />
                     CSV
                   </Button>

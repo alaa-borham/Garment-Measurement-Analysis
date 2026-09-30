@@ -6,11 +6,12 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
   GitCompare,
   Rows3,
   Columns3,
-  ArrowDownUp,
+  ArrowDownUp, ArrowUp, ArrowDown,
   Grid3x3,
   CheckSquare,
   Square,
@@ -28,70 +29,43 @@ import {
 import { LangContext } from "@/lib/i18n";
 import { apiRequest } from "@/lib/queryClient";
 import { exportCompareToExcel } from "@/lib/compare-export";
+import { exportCompareToPDF } from "@/lib/compare-pdf-export";
+import { exportCompareToCSV } from "@/lib/compare-csv-export";
+import { useToast } from "@/hooks/use-toast";
+import { useTransferPermissions } from "@/hooks/use-transfer-permissions";
+import { detectOutliers, type OutlierMethod } from "@/lib/outliers";
+import { FileText, Upload as UploadIcon, AlertTriangle } from "lucide-react";
 
 interface AdvancedAnalysisProps {
   datasetId: number;
   columns: string[];
 }
 
-export interface Row {
-  id: number;
-  data: Record<string, any>;
-}
-
-// استخراج أول رقم من نص
-export function extractNumber(s: any): number {
-  if (s === null || s === undefined) return NaN;
-  const str = String(s);
-  if (!str) return NaN;
-  const m = str.match(/-?\d+(?:[.,]\d+)?/);
-  if (!m) return NaN;
-  return parseFloat(m[0].replace(",", "."));
-}
-
-// نظام الألوان الديناميكي:
-// كل band = لون + عتبة دنيا. يتم فرزها تنازلياً حسب minDiff ،
-// وأول band تتحقق minDiff <= diff هي اللون المختار.
-// إذا لم تتحقق أي band، تستخدم fallback band (أدنى واحد).
-export interface ColorBand {
-  id: string;
-  minDiff: number;
-  bg: string;
-  fg: string;
-  label: string;
-}
-
-export const DEFAULT_BANDS: ColorBand[] = [
-  { id: "b1", minDiff: 1, bg: "hsl(142, 75%, 38%)", fg: "#ffffff", label: "أخضر غامق" },
-  { id: "b2", minDiff: 0.4, bg: "hsl(142, 70%, 70%)", fg: "hsl(142, 80%, 15%)", label: "أخضر فاتح" },
-  { id: "b3", minDiff: 0, bg: "hsl(48, 95%, 78%)", fg: "hsl(35, 80%, 20%)", label: "أصفر" },
-  { id: "b4", minDiff: -0.4, bg: "hsl(25, 90%, 70%)", fg: "hsl(15, 80%, 20%)", label: "برتقالي" },
-  { id: "b5", minDiff: -1, bg: "hsl(0, 80%, 72%)", fg: "hsl(0, 85%, 20%)", label: "أحمر فاتح" },
-  { id: "b6", minDiff: -Infinity, bg: "hsl(0, 75%, 38%)", fg: "#ffffff", label: "أحمر غامق" },
-];
-
-export function colorForDiff(diff: number, bands: ColorBand[]): { bg: string; fg: string } {
-  if (isNaN(diff)) return { bg: "transparent", fg: "inherit" };
-  // الفرز تنازلياً حسب minDiff
-  const sorted = [...bands].sort((a, b) => b.minDiff - a.minDiff);
-  for (const band of sorted) {
-    if (diff >= band.minDiff) return { bg: band.bg, fg: band.fg };
-  }
-  // احتياطي
-  const last = sorted[sorted.length - 1];
-  return last ? { bg: last.bg, fg: last.fg } : { bg: "transparent", fg: "inherit" };
-}
-
-// تنسيق رقم
-export function fmt(n: number): string {
-  if (isNaN(n)) return "—";
-  if (n > 0) return `+${Number.isInteger(n) ? n : n.toFixed(2).replace(/\.?0+$/, "")}`;
-  return String(Number.isInteger(n) ? n : n.toFixed(2).replace(/\.?0+$/, ""));
-}
+// استيراد من الملف المشترك (لتفادي circular imports مع ملفات التصدير)
+import {
+  extractNumber,
+  colorForDiff,
+  fmt,
+  DEFAULT_BANDS,
+  type Row,
+  type ColorBand,
+} from "@/lib/compare-shared";
+// إعادة تصدير لمن يستورد من compare-panel
+export { extractNumber, colorForDiff, fmt, DEFAULT_BANDS };
+export type { Row, ColorBand };
 
 export default function AdvancedAnalysisPanel({ datasetId, columns }: AdvancedAnalysisProps) {
+  const { canExport, canImportTemplates } = useTransferPermissions();
   const { lang } = useContext(LangContext);
   const isAr = lang === "ar";
+  const { toast } = useToast();
+
+  // إبراز القيم الشاذة في النتائج
+  const [outliersEnabled, setOutliersEnabled] = useState<boolean>(false);
+  const [outlierMethod] = useState<OutlierMethod>("iqr");
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  // مرجع لبوكس اختيار الأعمدة (لـ click-outside auto-collapse)
+  const colsContainerRef = useRef<HTMLDivElement | null>(null);
 
   const L = {
     modeTwoRows: isAr ? "فروق بين صفين" : "Two-row diff",
@@ -138,6 +112,16 @@ export default function AdvancedAnalysisPanel({ datasetId, columns }: AdvancedAn
     useSearch: isAr ? "استخدم البحث لإيجاد صف آخر" : "Use search to find more",
     openInNewTab: isAr ? "فتح في نافذة جديدة" : "Open in new window",
     exportExcel: isAr ? "تصدير Excel" : "Export Excel",
+    exportPDF: isAr ? "تصدير PDF" : "Export PDF",
+    exportTplJson: isAr ? "تصدير قوالب JSON" : "Export templates JSON",
+    importTplJson: isAr ? "استيراد قوالب JSON" : "Import templates JSON",
+    outliersOn: isAr ? "إبراز الشاذة" : "Highlight outliers",
+    outliersOff: isAr ? "إخفاء الشاذة" : "Hide outliers",
+    outliersFound: isAr ? "قيمة شاذة" : "outliers",
+    templatesImported: isAr ? "تم استيراد القوالب" : "Templates imported",
+    templatesExported: isAr ? "تم تصدير القوالب" : "Templates exported",
+    importFailed: isAr ? "فشل الاستيراد" : "Import failed",
+    pdfFailed: isAr ? "فشل تصدير PDF" : "PDF export failed",
     templates: isAr ? "القوالب" : "Templates",
     saveTemplate: isAr ? "حفظ كقالب" : "Save as template",
     loadTemplate: isAr ? "تحميل قالب" : "Load template",
@@ -160,16 +144,57 @@ export default function AdvancedAnalysisPanel({ datasetId, columns }: AdvancedAn
   const [bands, setBands] = useState<ColorBand[]>(DEFAULT_BANDS);
 
   // وضع مرجع لوضع المصفوفة: فروق عن الصف الأول أو السابق أو بدون (قيم خام)
-  const [matrixRef, setMatrixRef] = useState<"first" | "previous" | "raw">("first");
+  const [matrixRef, setMatrixRef] = useState<"first" | "previous" | "raw">("previous");
 
   // الصفوف المختارة (بالـ id)
   const [selectedRowIds, setSelectedRowIds] = useState<Set<number>>(new Set());
+  // ترتيب الصفوف حسب عمود التسمية (XS → S → M → L...)
+  const [sortByLabel, setSortByLabel] = useState<boolean>(false);
+  // اتجاه الترتيب: تصاعدي 'asc' (XS→XL، 1→100) أو تنازلي 'desc' (XL→XS، 100→1)
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
   const [selectedCols, setSelectedCols] = useState<Set<string>>(new Set());
+  // C: ترتيب مخصص للأعمدة المختارة (drag&drop)
+  const [colsOrder, setColsOrder] = useState<string[]>([]);
+  const [dragCol, setDragCol] = useState<string | null>(null);
+
+  // دالة مساعدة: تعيد الأعمدة المختارة بترتيب مخصص (إن وجد) أو بترتيب dataset
+  const orderedSelectedCols = useMemo(() => {
+    const sel = columns.filter((c) => selectedCols.has(c));
+    if (colsOrder.length === 0) return sel;
+    const orderMap = new Map(colsOrder.map((c, i) => [c, i]));
+    return sel.sort((a, b) => {
+      const ai = orderMap.has(a) ? orderMap.get(a)! : 1e9;
+      const bi = orderMap.has(b) ? orderMap.get(b)! : 1e9;
+      return ai - bi;
+    });
+  }, [columns, selectedCols, colsOrder]);
+
+  const handleDragStart = (col: string) => setDragCol(col);
+  const handleDragOver = (e: React.DragEvent) => e.preventDefault();
+  const handleDrop = (target: string) => {
+    if (!dragCol || dragCol === target) {
+      setDragCol(null);
+      return;
+    }
+    const current = orderedSelectedCols.slice();
+    const from = current.indexOf(dragCol);
+    const to = current.indexOf(target);
+    if (from < 0 || to < 0) {
+      setDragCol(null);
+      return;
+    }
+    current.splice(from, 1);
+    current.splice(to, 0, dragCol);
+    setColsOrder(current);
+    setDragCol(null);
+  };
   // طي/توسيع قسم اختيار الأعمدة (تلقائي عند بدء تحديد الصفوف)
   const [colsCollapsed, setColsCollapsed] = useState<boolean>(false);
   const [colsCollapsedManual, setColsCollapsedManual] = useState<boolean>(false);
   // طي/توسيع قسم اختيار الصفوف (تلقائي عند الضغط على احسب)
   const [rowsCollapsed, setRowsCollapsed] = useState<boolean>(false);
+  // طي بوكس عمود اسم الصف (مصفوفة الصفوف) — useEffect يعتمد على labelCol منقول للأسفل بعد تعريف labelCol
+  const [labelColCollapsed, setLabelColCollapsed] = useState<boolean>(false);
 
   // طي تلقائي عند تحديد ≥1 من الأعمدة وبدء التركيز على الصفوف
   // يطوي عند وجود أعمدة مختارة + بدء تحديد الصفوف، ويفتح إذا لم تبقَ أعمدة مختارة
@@ -182,12 +207,42 @@ export default function AdvancedAnalysisPanel({ datasetId, columns }: AdvancedAn
     }
   }, [selectedRowIds.size, selectedCols.size, colsCollapsedManual]);
 
+  // طي تلقائي لبوكس الأعمدة عند الضغط خارجه
+  // (مثل سلوك بوكس الصفوف تمامًا)
+  useEffect(() => {
+    if (colsCollapsed) return; // مطوي بالفعل
+    if (selectedCols.size === 0) return; // لا تجعل الطي تلقائيًا إلا بعد اختيار أعمدة
+    const handler = (e: MouseEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (!target) return;
+      // تجاهل الضغط داخل dialog/menu/popover
+      if (
+        target.closest('[role="dialog"]') ||
+        target.closest('[role="menu"]') ||
+        target.closest('[role="listbox"]') ||
+        target.closest('[data-radix-popper-content-wrapper]')
+      ) {
+        return;
+      }
+      if (colsContainerRef.current && !colsContainerRef.current.contains(target)) {
+        setColsCollapsed(true);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [colsCollapsed, selectedCols.size]);
+
   // وضع الصفين
   const [rowAId, setRowAId] = useState<number | null>(null);
   const [rowBId, setRowBId] = useState<number | null>(null);
 
   // عمود اسم الصف (اختياري)
   const [labelCol, setLabelCol] = useState<string>("");
+
+  // طيّ تلقائي عند اختيار عمود التسمية
+  useEffect(() => {
+    if (labelCol) setLabelColCollapsed(true);
+  }, [labelCol]);
 
   // التبويب الحالي (للقوالب)
   const [activeTab, setActiveTab] = useState<"matrix" | "two-rows" | "sequential">("matrix");
@@ -221,7 +276,75 @@ export default function AdvancedAnalysisPanel({ datasetId, columns }: AdvancedAn
     setTemplates(next);
     try {
       localStorage.setItem(TPL_KEY, JSON.stringify(next));
+      // إشعار حفظ تلقائي سياقي (تحسين #12)
+      toast({
+        description: isAr ? "تم الحفظ ✓" : "Saved ✓",
+        duration: 1500,
+      });
     } catch {}
+  };
+
+  // تصدير القوالب كملف JSON (تحسين #15)
+  const exportTemplatesJson = () => {
+    if (!canExport) return;
+    try {
+      const data = JSON.stringify(
+        { version: 1, datasetId, exportedAt: new Date().toISOString(), templates },
+        null,
+        2
+      );
+      const blob = new Blob([data], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `qiyasat-compare-templates-${datasetId}-${Date.now()}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      toast({ description: L.templatesExported, duration: 2000 });
+    } catch (err) {
+      console.error("export templates failed", err);
+    }
+  };
+
+  // استيراد القوالب من ملف JSON (تحسين #15)
+  const importTemplatesJson = (file: File) => {
+    if (!canImportTemplates) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const text = String(reader.result || "");
+        const parsed = JSON.parse(text);
+        const arr: CompareTemplate[] = Array.isArray(parsed)
+          ? parsed
+          : Array.isArray(parsed?.templates)
+            ? parsed.templates
+            : [];
+        if (!arr.length) throw new Error("empty");
+        // دمج بدون تكرار (حسب id)
+        const existing = new Map(templates.map((t) => [t.id, t] as const));
+        for (const t of arr) {
+          if (t && t.id && t.name) {
+            // توليد id جديد عند التكرار
+            const newId = existing.has(t.id)
+              ? `tpl-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
+              : t.id;
+            existing.set(newId, { ...t, id: newId });
+          }
+        }
+        const merged = Array.from(existing.values()).sort(
+          (a, b) => (b.createdAt || 0) - (a.createdAt || 0)
+        );
+        setTemplates(merged);
+        localStorage.setItem(TPL_KEY, JSON.stringify(merged));
+        toast({ description: L.templatesImported, duration: 2000 });
+      } catch (err) {
+        console.error("import templates failed", err);
+        toast({ description: L.importFailed, variant: "destructive", duration: 2500 });
+      }
+    };
+    reader.readAsText(file);
   };
 
   const saveCurrentAsTemplate = () => {
@@ -248,7 +371,7 @@ export default function AdvancedAnalysisPanel({ datasetId, columns }: AdvancedAn
     setSelectedCols(new Set(tpl.selectedCols));
     setSelectedRowIds(new Set(tpl.selectedRowIds));
     setBands(tpl.bands && tpl.bands.length ? tpl.bands : DEFAULT_BANDS);
-    setMatrixRef(tpl.matrixRef || "first");
+    setMatrixRef(tpl.matrixRef || "previous");
     setLabelCol(tpl.labelCol || "");
     setShowLoadTplDialog(false);
   };
@@ -460,6 +583,28 @@ export default function AdvancedAnalysisPanel({ datasetId, columns }: AdvancedAn
   const selectAllCols = () => setSelectedCols(new Set(columns));
   const clearCols = () => setSelectedCols(new Set());
 
+  // G: كشف تلقائي لأعمدة القياس الرقمية (تتجاهل أعمدة النص فقط)
+  const selectNumericCols = () => {
+    const numeric = new Set<string>();
+    for (const c of columns) {
+      let total = 0;
+      let nums = 0;
+      for (const r of allRows.slice(0, 50)) {
+        const v = r.data[c];
+        if (v === null || v === undefined || v === "") continue;
+        total++;
+        if (typeof v === "number" || (typeof v === "string" && !isNaN(parseFloat(v)) && /^[-+]?[\d.,\s]+/.test(v.trim()))) {
+          nums++;
+        }
+      }
+      // 70%+ من القيم رقمية
+      if (total > 0 && nums / total >= 0.7) {
+        numeric.add(c);
+      }
+    }
+    setSelectedCols(numeric);
+  };
+
   const runTwoRows = () => {
     if (rowAId === null || rowBId === null || selectedCols.size === 0) return;
     const a = allRows.find((r) => r.id === rowAId);
@@ -468,20 +613,107 @@ export default function AdvancedAnalysisPanel({ datasetId, columns }: AdvancedAn
     setComputed({
       mode: "two-rows",
       rows: [],
-      cols: columns.filter((c) => selectedCols.has(c)),
+      cols: orderedSelectedCols,
       rowA: a,
       rowB: b,
     });
     setRowsCollapsed(true);
   };
 
+  // خريطة ترتيب المقاسات
+  const SIZE_ORDER: Record<string, number> = {
+    "XXS": 1, "XS": 2, "S": 3, "SM": 3.5, "M": 4, "MD": 4.5,
+    "L": 5, "LG": 5.5, "XL": 6, "XXL": 7, "2XL": 7,
+    "XXXL": 8, "3XL": 8, "4XL": 9, "5XL": 10, "6XL": 11, "7XL": 12,
+  };
+
+  // اكتشاف نوع البيانات السائد: 'size' | 'number' | 'text'
+  const detectLabelType = (labels: string[]): "size" | "number" | "text" => {
+    if (labels.length === 0) return "text";
+    let sizeCount = 0;
+    let numberCount = 0;
+    for (const lab of labels) {
+      const t = (lab ?? "").toString().trim().toUpperCase();
+      if (!t) continue;
+      if (SIZE_ORDER[t] !== undefined) {
+        sizeCount++;
+      } else if (!isNaN(parseFloat(t)) && /^-?\d+(\.\d+)?$/.test(t)) {
+        numberCount++;
+      }
+    }
+    // إذا أكثر من نصف القيم مقاسات → ترتيب مقاسات
+    if (sizeCount >= Math.ceil(labels.length / 2)) return "size";
+    // إذا أكثر من نصف القيم أرقام → ترتيب رقمي
+    if (numberCount >= Math.ceil(labels.length / 2)) return "number";
+    return "text";
+  };
+
+  // مقارنة حسب نوع البيانات
+  const compareByType = (a: string, b: string, type: "size" | "number" | "text"): number => {
+    const sa = (a ?? "").toString().trim();
+    const sb = (b ?? "").toString().trim();
+    if (type === "size") {
+      const oa = SIZE_ORDER[sa.toUpperCase()];
+      const ob = SIZE_ORDER[sb.toUpperCase()];
+      if (oa !== undefined && ob !== undefined) return oa - ob;
+      if (oa !== undefined) return -1;
+      if (ob !== undefined) return 1;
+      return sa.localeCompare(sb, undefined, { numeric: true, sensitivity: "base" });
+    }
+    if (type === "number") {
+      const na = parseFloat(sa);
+      const nb = parseFloat(sb);
+      if (!isNaN(na) && !isNaN(nb)) return na - nb;
+      if (!isNaN(na)) return -1;
+      if (!isNaN(nb)) return 1;
+      return sa.localeCompare(sb, undefined, { numeric: true, sensitivity: "base" });
+    }
+    return sa.localeCompare(sb, undefined, { numeric: true, sensitivity: "base" });
+  };
+
+  // ترتيب الصفوف — أربعة أوضاع:
+  //  - sortByLabel=true  + asc  → ترتيب بحسب القياس: XS → S → M → L → XL (كل الصفوف)
+  //  - sortByLabel=true  + desc → ترتيب بحسب القياس عكسي: XL → L → M → S → XS (كل الصفوف)
+  //  - sortByLabel=false + asc  → ترتيب حسب id الأصلي تصاعدي (بدون فرز بالقياس)
+  //  - sortByLabel=false + desc → ترتيب حسب id الأصلي تنازلي
+  const maybeSortRows = (rows: Row[]): Row[] => {
+    const labels = rows.map((r) => rowLabel(r));
+    const type = detectLabelType(labels);
+    const dirMul = sortDir === "desc" ? -1 : 1;
+
+    if (sortByLabel) {
+      // ✅ ترتيب بحسب القياس (كل الصفوف تظهر، والمتشابه يتجاور)
+      return [...rows].sort((ra, rb) => {
+        const cmp = compareByType(rowLabel(ra), rowLabel(rb), type);
+        if (cmp === 0) return ra.id - rb.id;
+        return dirMul * cmp;
+      });
+    }
+
+    // ❌ ترتيب حسب الترتيب الأصلي (id) تصاعدي/تنازلي فقط — بدون أي فرز بالقياس
+    return [...rows].sort((ra, rb) => dirMul * (ra.id - rb.id));
+  };
+
+  // تحديث الجدول مباشرة عند تفعيل/إلغاء الترتيب أو تغيير عمود التسمية
+  useEffect(() => {
+    setComputed((prev) => {
+      if (!prev) return prev;
+      if (prev.mode === "matrix" || prev.mode === "sequential") {
+        const freshRows = allRows.filter((r) => selectedRowIds.has(r.id));
+        return { ...prev, rows: maybeSortRows(freshRows) };
+      }
+      return prev;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sortByLabel, sortDir, labelCol]);
+
   const runMatrix = () => {
     if (selectedRowIds.size === 0 || selectedCols.size === 0) return;
-    const rows = allRows.filter((r) => selectedRowIds.has(r.id));
+    const rows = maybeSortRows(allRows.filter((r) => selectedRowIds.has(r.id)));
     setComputed({
       mode: "matrix",
       rows,
-      cols: columns.filter((c) => selectedCols.has(c)),
+      cols: orderedSelectedCols,
       matrixRef,
     });
     setRowsCollapsed(true);
@@ -489,11 +721,11 @@ export default function AdvancedAnalysisPanel({ datasetId, columns }: AdvancedAn
 
   const runSequential = () => {
     if (selectedRowIds.size < 2 || selectedCols.size === 0) return;
-    const rows = allRows.filter((r) => selectedRowIds.has(r.id));
+    const rows = maybeSortRows(allRows.filter((r) => selectedRowIds.has(r.id)));
     setComputed({
       mode: "sequential",
       rows,
-      cols: columns.filter((c) => selectedCols.has(c)),
+      cols: orderedSelectedCols,
     });
     setRowsCollapsed(true);
   };
@@ -551,6 +783,42 @@ export default function AdvancedAnalysisPanel({ datasetId, columns }: AdvancedAn
               </span>
             )}
           </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={exportTemplatesJson}
+            disabled={!canExport || !templates.length}
+            className="h-7 text-xs gap-1"
+            title={L.exportTplJson}
+            data-testid="button-export-templates-json"
+          >
+            <Download className="w-3.5 h-3.5" />
+            JSON
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => fileInputRef.current?.click()}
+            className="h-7 text-xs gap-1"
+            title={L.importTplJson}
+            disabled={!canImportTemplates}
+            data-testid="button-import-templates-json"
+          >
+            <UploadIcon className="w-3.5 h-3.5" />
+            JSON
+          </Button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="application/json,.json"
+            disabled={!canImportTemplates}
+            className="hidden"
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) importTemplatesJson(f);
+              e.target.value = "";
+            }}
+          />
         </div>
 
         {/* حوار حفظ قالب */}
@@ -670,40 +938,24 @@ export default function AdvancedAnalysisPanel({ datasetId, columns }: AdvancedAn
         )}
 
         <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as any)}>
-          <TabsList>
-            <TabsTrigger value="matrix" data-testid="adv-mode-matrix">
+          <TabsList className="h-auto">
+            <TabsTrigger value="matrix" data-testid="adv-mode-matrix" className="text-sm font-bold px-4 py-2">
               <Grid3x3 className="w-4 h-4 me-2" />
               {L.modeMatrix}
             </TabsTrigger>
-            <TabsTrigger value="two-rows" data-testid="adv-mode-two-rows">
+            <TabsTrigger value="two-rows" data-testid="adv-mode-two-rows" className="text-sm font-bold px-4 py-2">
               <Rows3 className="w-4 h-4 me-2" />
               {L.modeTwoRows}
             </TabsTrigger>
-            <TabsTrigger value="sequential" data-testid="adv-mode-sequential">
+            <TabsTrigger value="sequential" data-testid="adv-mode-sequential" className="text-sm font-bold px-4 py-2">
               <ArrowDownUp className="w-4 h-4 me-2" />
               {L.modeSequential}
             </TabsTrigger>
           </TabsList>
 
-          {/* عمود التسمية + العتبات (مشتركة بين كل الأوضاع) */}
-          <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div className="space-y-1">
-              <Label className="text-xs">{L.rowLabelCol}</Label>
-              <select
-                className="w-full h-9 rounded-md border bg-background px-2 text-sm"
-                value={labelCol}
-                onChange={(e) => setLabelCol(e.target.value)}
-              >
-                <option value="">{L.none}</option>
-                {columns.map((c) => (
-                  <option key={c} value={c}>{c}</option>
-                ))}
-              </select>
-            </div>
-          </div>
 
           {/* اختيار الأعمدة (مشترك بين كل الأوضاع) — قابل للطي */}
-          <div className="mt-3 rounded-md border bg-muted/30 p-3 space-y-2">
+          <div ref={colsContainerRef} className="mt-3 rounded-md border bg-muted/30 p-3 space-y-2">
             <div className="flex items-center justify-between flex-wrap gap-2">
               <button
                 type="button"
@@ -711,7 +963,7 @@ export default function AdvancedAnalysisPanel({ datasetId, columns }: AdvancedAn
                   setColsCollapsed((v) => !v);
                   setColsCollapsedManual(true);
                 }}
-                className="flex items-center gap-1 text-xs font-semibold hover:opacity-80"
+                className="flex items-center gap-1.5 text-sm font-bold hover:opacity-80"
                 data-testid="toggle-cols-collapse"
               >
                 {colsCollapsed ? (
@@ -723,7 +975,11 @@ export default function AdvancedAnalysisPanel({ datasetId, columns }: AdvancedAn
                 {L.selectColumns} ({selectedCols.size}/{columns.length})
               </button>
               {!colsCollapsed && (
-                <div className="flex gap-1">
+                <div className="flex gap-1 flex-wrap">
+                  <Button variant="ghost" size="sm" onClick={selectNumericCols} className="h-7 text-xs" title={isAr ? "اختر أعمدة القياس الرقمية تلقائياً" : "Auto-detect numeric measurement columns"} data-testid="button-auto-numeric">
+                    <AlertTriangle className="w-3.5 h-3.5 me-1" />
+                    {isAr ? "رقمية" : "Numeric"}
+                  </Button>
                   <Button variant="ghost" size="sm" onClick={selectAllCols} className="h-7 text-xs">
                     <CheckSquare className="w-3.5 h-3.5 me-1" />
                     {L.selectAll}
@@ -736,15 +992,18 @@ export default function AdvancedAnalysisPanel({ datasetId, columns }: AdvancedAn
               )}
             </div>
             {colsCollapsed ? (
-              <div className="flex flex-wrap gap-1">
+              <div className="flex flex-wrap gap-1 items-center">
                 {Array.from(selectedCols).slice(0, 12).map((c) => (
-                  <span
+                  <button
                     key={c}
-                    className="text-[11px] px-2 py-0.5 rounded bg-primary/10 text-primary border border-primary/20 truncate max-w-[140px]"
-                    title={c}
+                    type="button"
+                    onClick={() => toggleCol(c)}
+                    className="group flex items-center gap-1 text-[11px] px-2 py-0.5 rounded bg-primary/10 text-primary border border-primary/20 truncate max-w-[160px] hover:bg-red-500/15 hover:border-red-500/40 hover:text-red-600 transition-colors cursor-pointer"
+                    title={isAr ? `اضغط لإزالة: ${c}` : `Click to remove: ${c}`}
                   >
-                    {c}
-                  </span>
+                    <span className="truncate">{c}</span>
+                    <X className="w-3 h-3 opacity-50 group-hover:opacity-100 flex-shrink-0" />
+                  </button>
                 ))}
                 {selectedCols.size > 12 && (
                   <span className="text-[11px] px-2 py-0.5 rounded bg-muted text-muted-foreground">
@@ -756,13 +1015,21 @@ export default function AdvancedAnalysisPanel({ datasetId, columns }: AdvancedAn
                     {isAr ? "لم يتم اختيار أعمدة" : "No columns selected"}
                   </span>
                 )}
+                <button
+                  type="button"
+                  onClick={() => { setColsCollapsed(false); setColsCollapsedManual(true); }}
+                  className="text-[11px] px-2 py-0.5 rounded border border-dashed border-primary/40 text-primary hover:bg-primary/10 ms-1"
+                  title={isAr ? "فتح لإضافة/تعديل الأعمدة" : "Open to edit columns"}
+                >
+                  {isAr ? "+ تعديل" : "+ Edit"}
+                </button>
               </div>
             ) : (
-              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-1.5 max-h-40 overflow-auto">
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-1.5 max-h-40 overflow-auto thin-scrollbar">
                 {columns.map((c) => (
                   <label
                     key={c}
-                    className="flex items-center gap-2 text-xs cursor-pointer hover:bg-muted/50 rounded px-2 py-1"
+                    className="flex items-center gap-2 text-sm font-semibold cursor-pointer hover:bg-muted/50 rounded px-2 py-1.5"
                   >
                     <Checkbox checked={selectedCols.has(c)} onCheckedChange={() => toggleCol(c)} />
                     <span className="truncate" title={c}>{c}</span>
@@ -772,11 +1039,56 @@ export default function AdvancedAnalysisPanel({ datasetId, columns }: AdvancedAn
             )}
           </div>
 
-          {/* عتبات الألوان */}
-          <ColorBandsEditor bands={bands} setBands={setBands} L={L} />
+          {/* C: ترتيب الأعمدة بالسحب (Drag & Drop) */}
+          {selectedCols.size > 1 && !colsCollapsed && (
+            <div className="rounded-lg border bg-muted/10 p-3 space-y-2">
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <Label className="text-xs font-semibold flex items-center gap-1.5">
+                  <span className="text-muted-foreground">
+                    {isAr ? "ترتيب الأعمدة (اسحب للترتيب)" : "Column order (drag to reorder)"}
+                  </span>
+                </Label>
+                {colsOrder.length > 0 && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setColsOrder([])}
+                    className="h-6 text-xs px-2"
+                    data-testid="reset-cols-order"
+                  >
+                    {isAr ? "استعادة" : "Reset"}
+                  </Button>
+                )}
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {orderedSelectedCols.map((c, idx) => (
+                  <div
+                    key={c}
+                    draggable
+                    onDragStart={() => handleDragStart(c)}
+                    onDragOver={handleDragOver}
+                    onDrop={() => handleDrop(c)}
+                    onDragEnd={() => setDragCol(null)}
+                    className={
+                      "flex items-center gap-1.5 px-2 py-1 text-xs rounded border cursor-move select-none transition-all " +
+                      (dragCol === c
+                        ? "opacity-50 bg-primary/20 border-primary"
+                        : "bg-background border-border hover:border-primary/40 hover:bg-accent/50")
+                    }
+                    title={isAr ? "اسحب للتغيير" : "Drag to reorder"}
+                    data-testid={`drag-col-${c}`}
+                  >
+                    <span className="text-muted-foreground text-[10px] font-mono">{idx + 1}</span>
+                    <span className="text-muted-foreground">⋮⋮</span>
+                    <span className="truncate max-w-[140px]">{c}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
-          {/* الوضع 1: مصفوفة */}
-          <TabsContent value="matrix" className="mt-4 space-y-3">
+          {/* مرجع المصفوفة (يظهر فقط في وضع matrix) */}
+          {activeTab === "matrix" && (
             <div className="space-y-1">
               <Label className="text-xs">{L.matrixRefLabel}</Label>
               <select
@@ -789,6 +1101,10 @@ export default function AdvancedAnalysisPanel({ datasetId, columns }: AdvancedAn
                 <option value="raw">{L.refRaw}</option>
               </select>
             </div>
+          )}
+
+          {/* اختيار الصفوف (مشترك بين matrix و sequential — مخفي في two-rows) */}
+          {activeTab !== "two-rows" && (
             <RowSelector
               rows={allRows}
               selected={selectedRowIds}
@@ -801,15 +1117,38 @@ export default function AdvancedAnalysisPanel({ datasetId, columns }: AdvancedAn
               collapsed={rowsCollapsed}
               onToggleCollapse={() => setRowsCollapsed((v) => !v)}
             />
-            <Button
-              onClick={runMatrix}
-              disabled={!selectedRowIds.size || !selectedCols.size}
-              data-testid="button-compute-matrix"
-            >
-              <GitCompare className="w-4 h-4 me-2" />
-              {L.compute}
-            </Button>
-          </TabsContent>
+          )}
+
+          {/* زر احسب — مباشرة أسفل بوكس الصفوف (matrix + sequential) — في الجهة الأخرى */}
+          {activeTab === "matrix" && (
+            <div className="flex justify-end">
+              <Button
+                onClick={runMatrix}
+                disabled={!selectedRowIds.size || !selectedCols.size}
+                data-testid="button-compute-matrix"
+                className="w-full sm:w-auto"
+              >
+                <GitCompare className="w-4 h-4 me-2" />
+                {L.compute}
+              </Button>
+            </div>
+          )}
+          {activeTab === "sequential" && (
+            <div className="flex justify-end">
+              <Button
+                onClick={runSequential}
+                disabled={selectedRowIds.size < 2 || !selectedCols.size}
+                data-testid="button-compute-sequential"
+                className="w-full sm:w-auto"
+              >
+                <GitCompare className="w-4 h-4 me-2" />
+                {L.compute}
+              </Button>
+            </div>
+          )}
+
+          {/* الوضع 1: مصفوفة (المحتوى نُقل لأعلى) */}
+          <TabsContent value="matrix" className="mt-0" />
 
           {/* الوضع 2: صفان */}
           <TabsContent value="two-rows" className="mt-4 space-y-3">
@@ -841,29 +1180,8 @@ export default function AdvancedAnalysisPanel({ datasetId, columns }: AdvancedAn
             </Button>
           </TabsContent>
 
-          {/* الوضع 3: متتالي */}
-          <TabsContent value="sequential" className="mt-4 space-y-3">
-            <RowSelector
-              rows={allRows}
-              selected={selectedRowIds}
-              toggle={toggleRow}
-              selectAll={selectAllRows}
-              clear={clearRows}
-              rowLabel={rowLabel}
-              L={L}
-              isAr={isAr}
-              collapsed={rowsCollapsed}
-              onToggleCollapse={() => setRowsCollapsed((v) => !v)}
-            />
-            <Button
-              onClick={runSequential}
-              disabled={selectedRowIds.size < 2 || !selectedCols.size}
-              data-testid="button-compute-sequential"
-            >
-              <GitCompare className="w-4 h-4 me-2" />
-              {L.compute}
-            </Button>
-          </TabsContent>
+          {/* الوضع 3: متتالي (المحتوى نُقل لأعلى) */}
+          <TabsContent value="sequential" className="mt-0" />
         </Tabs>
 
         {/* النتائج */}
@@ -871,10 +1189,22 @@ export default function AdvancedAnalysisPanel({ datasetId, columns }: AdvancedAn
           <div className="space-y-2">
             <div className="flex justify-end gap-2">
               <Button
+                variant={outliersEnabled ? "default" : "outline"}
+                size="sm"
+                onClick={() => setOutliersEnabled((v) => !v)}
+                className="h-8 text-xs gap-1.5"
+                title={outliersEnabled ? L.outliersOff : L.outliersOn}
+                data-testid="button-toggle-outliers"
+              >
+                <AlertTriangle className="w-3.5 h-3.5" />
+                {outliersEnabled ? L.outliersOff : L.outliersOn}
+              </Button>
+              <Button
                 variant="outline"
                 size="sm"
                 onClick={() => {
                   try {
+                    if (!canExport) return;
                     exportCompareToExcel(computed, bands, rowLabel, {
                       isAr,
                       datasetName: `dataset-${datasetId}`,
@@ -885,9 +1215,53 @@ export default function AdvancedAnalysisPanel({ datasetId, columns }: AdvancedAn
                 }}
                 className="h-8 text-xs gap-1.5"
                 data-testid="button-export-excel"
+                disabled={!canExport}
               >
                 <Download className="w-3.5 h-3.5" />
                 {L.exportExcel}
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={async () => {
+                  try {
+                    if (!canExport) return;
+                    await exportCompareToPDF(computed, bands, {
+                      isAr,
+                      datasetName: `dataset-${datasetId}`,
+                      rowLabel,
+                    });
+                  } catch (err) {
+                    console.error("PDF export failed", err);
+                    toast({ description: L.pdfFailed, variant: "destructive", duration: 2500 });
+                  }
+                }}
+                className="h-8 text-xs gap-1.5"
+                data-testid="button-export-pdf"
+                disabled={!canExport}
+              >
+                <FileText className="w-3.5 h-3.5" />
+                {L.exportPDF}
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  try {
+                    if (!canExport) return;
+                    exportCompareToCSV(computed, bands, rowLabel, {
+                      fileName: `dataset-${datasetId}-compare.csv`,
+                    });
+                  } catch (err) {
+                    console.error("CSV export failed", err);
+                  }
+                }}
+                className="h-8 text-xs gap-1.5"
+                data-testid="button-export-csv"
+                disabled={!canExport}
+              >
+                <Download className="w-3.5 h-3.5" />
+                CSV
               </Button>
               <Button
                 variant="outline"
@@ -900,9 +1274,119 @@ export default function AdvancedAnalysisPanel({ datasetId, columns }: AdvancedAn
                 {L.openInNewTab}
               </Button>
             </div>
-            <ResultsTable computed={computed} bands={bands} rowLabel={rowLabel} L={L} />
+          {/* عمود التسمية — قابل للطي */}
+          <div className="mt-4 rounded-lg border bg-muted/20 p-3 space-y-2.5">
+            <div className="flex items-center justify-between flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => setLabelColCollapsed((v) => !v)}
+                className="flex items-center gap-1.5 text-sm font-semibold hover:opacity-80"
+                data-testid="toggle-row-label-collapse"
+              >
+                {labelColCollapsed ? (
+                  <ChevronDown className="w-4 h-4" />
+                ) : (
+                  <ChevronUp className="w-4 h-4" />
+                )}
+                <span className="text-foreground/80">{L.rowLabelCol}</span>
+                {labelCol && (
+                  <>
+                    <span className="text-muted-foreground">:</span>
+                    <span className="text-primary font-bold">{labelCol}</span>
+                  </>
+                )}
+              </button>
+              <div className="flex items-center gap-2">
+                {/* قائمة منسدلة موحّدة: 4 احتمالات للترتيب */}
+                <Select
+                  value={`${sortByLabel ? "sort" : "group"}-${sortDir}`}
+                  onValueChange={(v) => {
+                    const [mode, dir] = v.split("-") as ["sort" | "group", "asc" | "desc"];
+                    setSortByLabel(mode === "sort");
+                    setSortDir(dir);
+                  }}
+                >
+                  <SelectTrigger
+                    className={`h-7 text-xs px-2.5 gap-1.5 w-auto min-w-[180px] ${sortByLabel ? "bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-700" : "bg-blue-100 hover:bg-blue-200 text-blue-900 border-2 border-blue-400 dark:bg-blue-950 dark:text-blue-200"}`}
+                    onClick={(e) => e.stopPropagation()}
+                    data-testid="sort-mode-select"
+                  >
+                    <ArrowDownUp className="w-3.5 h-3.5" />
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent onClick={(e) => e.stopPropagation()}>
+                    <SelectItem value="sort-asc">
+                      {isAr ? "ترتيب بحسب القياس: XS → S → M → L → XL" : "By size: XS → S → M → L → XL"}
+                    </SelectItem>
+                    <SelectItem value="sort-desc">
+                      {isAr ? "ترتيب بحسب القياس: XL → L → M → S → XS" : "By size: XL → L → M → S → XS"}
+                    </SelectItem>
+                    <SelectItem value="group-asc">
+                      {isAr ? "ترتيب تصاعدي (الأصلي)" : "Ascending (original order)"}
+                    </SelectItem>
+                    <SelectItem value="group-desc">
+                      {isAr ? "ترتيب تنازلي (الأصلي)" : "Descending (original order)"}
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
+                {labelCol && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setLabelCol("");
+                      setLabelColCollapsed(false);
+                    }}
+                    className="h-6 text-xs px-2"
+                    data-testid="clear-row-label-col"
+                  >
+                    {L.clear}
+                  </Button>
+                )}
+              </div>
+            </div>
+            {!labelColCollapsed && (
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2 max-h-56 overflow-y-auto pr-1 thin-scrollbar">
+                {columns.map((c) => {
+                  const active = labelCol === c;
+                  return (
+                    <button
+                      key={c}
+                      type="button"
+                      onClick={() => {
+                        setLabelCol(active ? "" : c);
+                      }}
+                      className={
+                        "text-xs px-2.5 py-2 rounded-md border text-start truncate transition-all duration-150 " +
+                        (active
+                          ? "bg-primary text-primary-foreground border-primary shadow-sm ring-2 ring-primary/30 font-semibold"
+                          : "bg-background hover:bg-accent hover:border-primary/40 border-border/60")
+                      }
+                      title={c}
+                      data-testid={`btn-row-label-${c}`}
+                    >
+                      {c}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+            <ResultsTable
+              computed={computed}
+              bands={bands}
+              rowLabel={rowLabel}
+              L={L}
+              isAr={isAr}
+              outliersEnabled={outliersEnabled}
+              outlierMethod={outlierMethod}
+            />
           </div>
         )}
+
+        {/* عتبات الألوان (نُقلت تحت النتائج لتسريع الوصول للنتيجة) */}
+        <ColorBandsEditor bands={bands} setBands={setBands} L={L} />
       </CardContent>
     </Card>
   );
@@ -976,7 +1460,7 @@ function RowSelector({
         <button
           type="button"
           onClick={onToggleCollapse}
-          className="flex items-center gap-1 text-xs font-semibold hover:opacity-80"
+          className="flex items-center gap-1.5 text-sm font-bold hover:opacity-80"
           data-testid="toggle-rows-collapse"
         >
           {collapsed ? (
@@ -1037,13 +1521,13 @@ function RowSelector({
           setSearch(e.target.value);
           setVisibleCount(500);
         }}
-        className="h-8 text-xs"
+        className="h-9 text-sm font-medium"
       />
       <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-1.5 max-h-60 overflow-auto">
         {visible.map((r) => (
           <label
             key={r.id}
-            className="flex items-center gap-2 text-xs cursor-pointer hover:bg-muted/50 rounded px-2 py-1"
+            className="flex items-center gap-2 text-sm font-semibold cursor-pointer hover:bg-muted/50 rounded px-2 py-1.5"
           >
             <Checkbox checked={selected.has(r.id)} onCheckedChange={() => toggle(r.id)} />
             <span className="truncate" title={rowLabel(r)}>{rowLabel(r)}</span>
@@ -1309,19 +1793,301 @@ export function ResultsTable({
   bands,
   rowLabel,
   L,
+  isAr = true,
+  outliersEnabled = false,
+  outlierMethod = "iqr",
 }: {
   computed: ComputedShape;
   bands: ColorBand[];
   rowLabel: (r: Row) => string;
   L: any;
+  isAr?: boolean;
+  outliersEnabled?: boolean;
+  outlierMethod?: OutlierMethod;
 }) {
   const { mode, rows, cols, rowA, rowB, matrixRef } = computed;
+
+  // ✅ TOOLTIP الغني — state لمحتوى Tooltip الكبير عند الـ hover على خلية
+  type HoverInfo = {
+    measure: string;
+    rowLabel: string;
+    current: string;
+    refLabel?: string;
+    refValue?: string;
+    diff?: string;
+    pct?: string;
+    isOutlier: boolean;
+    x: number;
+    y: number;
+  } | null;
+  const [hoverInfo, setHoverInfo] = useState<HoverInfo>(null);
+  // معرّف الخلية المفتوحة حالياً للتبديل عند الضغط مرة أخرى
+  const [openCellKey, setOpenCellKey] = useState<string | null>(null);
+  // موقع البوكس المخصص (إن تم سحبه) — null = الموقع التلقائي
+  const [tooltipPos, setTooltipPos] = useState<{ x: number; y: number } | null>(null);
+  // حجم البوكس المخصص (إن تم تغييره) — null = الحجم الافتراضي
+  const [tooltipSize, setTooltipSize] = useState<{ w: number; h: number } | null>(null);
+  // حالة السحب وتغيير الحجم
+  const dragStateRef = useRef<{ startX: number; startY: number; origLeft: number; origTop: number } | null>(null);
+  const resizeStateRef = useRef<{ startX: number; startY: number; origW: number; origH: number } | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
+  const [isResizing, setIsResizing] = useState(false);
+
+  // عند الضغط على خلية: إن كانت نفسها مفتوحة → اغلق، وإلا افتح بمعلوماتها
+  const toggleCell = (key: string, info: NonNullable<HoverInfo>) => {
+    if (openCellKey === key) {
+      setOpenCellKey(null);
+      setHoverInfo(null);
+      setTooltipPos(null);
+      setTooltipSize(null);
+    } else {
+      setOpenCellKey(key);
+      setHoverInfo(info);
+      // الحفاظ على الموقع والحجم المخصصين عبر الخلايا — لا يعاد الضبط إلا عند الإغلاق
+    }
+  };
+  const closeCell = () => {
+    setOpenCellKey(null);
+    setHoverInfo(null);
+    setTooltipPos(null);
+    setTooltipSize(null);
+  };
+
+  // إغلاق البوكس بضغطة Escape
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") closeCell();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  // 📝 Tooltip Overlay — صندوق أفقي عريض يعرض تفاصيل الخلية في صف واحد
+  const tooltipOverlay = hoverInfo ? (() => {
+    const TOOLTIP_W = tooltipSize?.w ?? 920;
+    const TOOLTIP_H = tooltipSize?.h ?? 130;
+    const margin = 12;
+    let left: number;
+    let top: number;
+    if (tooltipPos) {
+      left = tooltipPos.x;
+      top = tooltipPos.y;
+    } else {
+      left = hoverInfo.x + 18;
+      top = hoverInfo.y + 18;
+      if (typeof window !== "undefined") {
+        if (left + TOOLTIP_W + margin > window.innerWidth) {
+          left = Math.max(margin, hoverInfo.x - TOOLTIP_W - 18);
+        }
+        if (top + TOOLTIP_H + margin > window.innerHeight) {
+          top = Math.max(margin, hoverInfo.y - TOOLTIP_H - 18);
+        }
+      }
+    }
+    // لون الفرق ديناميكياً
+    const diffNum = hoverInfo.diff ? parseFloat(hoverInfo.diff) : NaN;
+    const diffColor = isNaN(diffNum) || diffNum === 0
+      ? "text-slate-700 dark:text-slate-100"
+      : diffNum > 0
+        ? "text-emerald-800 dark:text-emerald-200"
+        : "text-rose-800 dark:text-rose-200";
+    const diffBg = isNaN(diffNum) || diffNum === 0
+      ? "bg-slate-100 dark:bg-slate-800 border-slate-400 dark:border-slate-500"
+      : diffNum > 0
+        ? "bg-emerald-100 dark:bg-emerald-950 border-emerald-500"
+        : "bg-rose-100 dark:bg-rose-950 border-rose-500";
+    return (
+      <div
+        className={`fixed z-[9999] pointer-events-auto rounded-xl border-[3px] border-slate-900 dark:border-white shadow-2xl px-4 pt-7 pb-3 overflow-hidden ${isDragging || isResizing ? "cursor-grabbing select-none" : ""}`}
+        style={{ left, top, width: TOOLTIP_W, height: tooltipSize?.h ?? "auto", minHeight: 110, maxWidth: "calc(100vw - 24px)", background: "hsl(var(--popover))", boxShadow: "0 30px 60px -10px rgba(0,0,0,0.6)" }}
+      >
+        {/* شريط السحب العلوي */}
+        <div
+          className="absolute top-0 inset-x-0 h-6 cursor-grab active:cursor-grabbing flex items-center justify-center gap-1 rounded-t-xl bg-slate-200/70 dark:bg-slate-700/60 hover:bg-slate-300/80 dark:hover:bg-slate-600/80 transition-colors border-b border-slate-300 dark:border-slate-600"
+          onMouseDown={(e) => {
+            if ((e.target as HTMLElement).closest("button")) return;
+            e.preventDefault();
+            const startX = e.clientX;
+            const startY = e.clientY;
+            const origLeft = left;
+            const origTop = top;
+            dragStateRef.current = { startX, startY, origLeft, origTop };
+            setIsDragging(true);
+            const onMove = (ev: MouseEvent) => {
+              const s = dragStateRef.current;
+              if (!s) return;
+              const nx = s.origLeft + (ev.clientX - s.startX);
+              const ny = s.origTop + (ev.clientY - s.startY);
+              const maxX = (typeof window !== "undefined" ? window.innerWidth : 1920) - TOOLTIP_W - 4;
+              const maxY = (typeof window !== "undefined" ? window.innerHeight : 1080) - 40;
+              setTooltipPos({
+                x: Math.max(4, Math.min(maxX, nx)),
+                y: Math.max(4, Math.min(maxY, ny)),
+              });
+            };
+            const onUp = () => {
+              setIsDragging(false);
+              dragStateRef.current = null;
+              window.removeEventListener("mousemove", onMove);
+              window.removeEventListener("mouseup", onUp);
+            };
+            window.addEventListener("mousemove", onMove);
+            window.addEventListener("mouseup", onUp);
+          }}
+          title={isAr ? "اسحب لتحريك البوكس" : "Drag to move"}
+        >
+          <span className="block w-8 h-1 rounded-full bg-slate-500/50 dark:bg-slate-300/40"></span>
+          <span className="block w-8 h-1 rounded-full bg-slate-500/50 dark:bg-slate-300/40"></span>
+        </div>
+        <button
+          type="button"
+          onClick={closeCell}
+          className="absolute top-0.5 end-1 w-6 h-6 rounded-full bg-slate-200 dark:bg-slate-700 hover:bg-rose-500 hover:text-white flex items-center justify-center text-slate-700 dark:text-slate-100 transition-colors shadow-md z-20"
+          aria-label={isAr ? "إغلاق" : "Close"}
+        >
+          <X className="w-3.5 h-3.5" />
+        </button>
+        <div className="flex items-stretch gap-2 pe-7">
+          {/* القياس */}
+          <div className="flex-1 min-w-0 px-2.5 py-1.5 rounded-lg bg-blue-100 dark:bg-blue-950/80 border-2 border-blue-500 dark:border-blue-600">
+            <div className="flex items-center gap-1 text-[11px] uppercase tracking-wider text-blue-800 dark:text-blue-200 font-extrabold mb-0.5">
+              <span>📌</span>
+              <span>{isAr ? "القياس" : "Measure"}</span>
+            </div>
+            <div className="text-base font-extrabold text-blue-950 dark:text-blue-50 break-words leading-tight">{hoverInfo.measure}</div>
+          </div>
+
+          {/* الصف */}
+          <div className="flex-1 min-w-0 px-2.5 py-1.5 rounded-lg bg-violet-100 dark:bg-violet-950/80 border-2 border-violet-500 dark:border-violet-600">
+            <div className="flex items-center gap-1 text-[11px] uppercase tracking-wider text-violet-800 dark:text-violet-200 font-extrabold mb-0.5">
+              <span>📍</span>
+              <span>{isAr ? "الصف" : "Row"}</span>
+            </div>
+            <div className="text-base font-extrabold text-violet-950 dark:text-violet-50 break-words leading-tight">{hoverInfo.rowLabel}</div>
+          </div>
+
+          {/* القيمة الحالية */}
+          <div className="flex-1 min-w-0 px-2.5 py-1.5 rounded-lg bg-amber-100 dark:bg-amber-950/80 border-2 border-amber-500 dark:border-amber-600">
+            <div className="flex items-center gap-1 text-[11px] uppercase tracking-wider text-amber-800 dark:text-amber-200 font-extrabold mb-0.5">
+              <span>🔢</span>
+              <span>{isAr ? "الحالية" : "Current"}</span>
+            </div>
+            <div className="flex items-baseline gap-2">
+              <span className="text-[26px] font-black text-amber-950 dark:text-amber-50 tabular-nums leading-none">{hoverInfo.current}</span>
+              <span className="text-[11px] text-amber-800 dark:text-amber-300 truncate font-extrabold">{hoverInfo.rowLabel}</span>
+            </div>
+          </div>
+
+          {/* القيمة المرجعية */}
+          {hoverInfo.refValue !== undefined && (
+            <div className="flex-1 min-w-0 px-2.5 py-1.5 rounded-lg bg-cyan-100 dark:bg-cyan-950/80 border-2 border-cyan-500 dark:border-cyan-600">
+              <div className="flex items-center gap-1 text-[11px] uppercase tracking-wider text-cyan-800 dark:text-cyan-200 font-extrabold mb-0.5">
+                <span>📊</span>
+                <span>{isAr ? "المرجعية" : "Reference"}</span>
+              </div>
+              <div className="flex items-baseline gap-2">
+                <span className="text-[26px] font-black text-cyan-950 dark:text-cyan-50 tabular-nums leading-none">{hoverInfo.refValue}</span>
+                {hoverInfo.refLabel && (
+                  <span className="text-[11px] text-cyan-800 dark:text-cyan-300 truncate font-extrabold">{hoverInfo.refLabel}</span>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* الفرق + النسبة */}
+          {hoverInfo.diff !== undefined && (
+            <div className={`flex-1 min-w-0 px-2.5 py-1.5 rounded-lg border-2 ${diffBg}`}>
+              <div className={`flex items-center gap-1 text-[11px] uppercase tracking-wider font-extrabold mb-0.5 ${diffColor}`}>
+                <span className="text-base">Δ</span>
+                <span>{isAr ? "الفرق" : "Difference"}</span>
+              </div>
+              <div className="flex items-baseline gap-2">
+                <span className={`text-[26px] font-black tabular-nums leading-none ${diffColor}`}>{hoverInfo.diff}</span>
+                {hoverInfo.pct && (
+                  <span className={`text-[12px] font-extrabold ${diffColor}`}>{hoverInfo.pct}</span>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* مقبض تغيير الحجم — الزاوية السفلية اليسرى (start في RTL) */}
+        <div
+          className="absolute bottom-0 start-0 w-5 h-5 cursor-nesw-resize z-20 group"
+          onMouseDown={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const startX = e.clientX;
+            const startY = e.clientY;
+            const origW = TOOLTIP_W;
+            const origH = typeof tooltipSize?.h === "number" ? tooltipSize.h : (e.currentTarget.parentElement?.getBoundingClientRect().height ?? 130);
+            resizeStateRef.current = { startX, startY, origW, origH };
+            setIsResizing(true);
+            const onMove = (ev: MouseEvent) => {
+              const s = resizeStateRef.current;
+              if (!s) return;
+              // في RTL: الزاوية السفلية اليسرى — السحب لليسار يكبر العرض، للأسفل يكبر الارتفاع
+              const dx = s.startX - ev.clientX; // عكس لأن المقبض يسار
+              const dy = ev.clientY - s.startY;
+              const newW = Math.max(420, Math.min(window.innerWidth - 20, s.origW + dx));
+              const newH = Math.max(110, Math.min(window.innerHeight - 20, s.origH + dy));
+              setTooltipSize({ w: newW, h: newH });
+            };
+            const onUp = () => {
+              setIsResizing(false);
+              resizeStateRef.current = null;
+              window.removeEventListener("mousemove", onMove);
+              window.removeEventListener("mouseup", onUp);
+            };
+            window.addEventListener("mousemove", onMove);
+            window.addEventListener("mouseup", onUp);
+          }}
+          title={isAr ? "اسحب لتغيير الحجم" : "Drag to resize"}
+        >
+          <svg viewBox="0 0 16 16" className="w-full h-full text-slate-500 dark:text-slate-300 opacity-60 group-hover:opacity-100 transition-opacity">
+            <path d="M2 14 L14 14 M2 14 L2 10 M5 14 L5 7 M8 14 L8 4" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round"/>
+          </svg>
+        </div>
+
+        {hoverInfo.isOutlier && (
+          <div className="flex items-center gap-2 mt-2 pt-1.5 border-t-2 border-amber-500">
+            <AlertTriangle className="w-4 h-4 text-amber-600 flex-shrink-0" />
+            <span className="text-sm font-extrabold text-amber-800 dark:text-amber-300">
+              {isAr ? "قيمة شاذة تحتاج مراجعة" : "Outlier value needs review"}
+            </span>
+          </div>
+        )}
+      </div>
+    );
+  })() : null;
+
+  // حساب فهارس القيم الشاذة لكل عمود (في وضع المصفوفة)
+  const outliersByCol = useMemo(() => {
+    if (!outliersEnabled || mode !== "matrix") return new Map<string, Set<number>>();
+    const map = new Map<string, Set<number>>();
+    for (const c of cols) {
+      const values = rows.map((r) => extractNumber(r.data[c]));
+      const { indices } = detectOutliers(values, outlierMethod, 2);
+      map.set(c, indices);
+    }
+    return map;
+  }, [outliersEnabled, outlierMethod, mode, cols, rows]);
+
+  // حساب فهارس الصفوف الشاذة في وضع two-rows (على الأعمدة)
+  const twoRowOutliers = useMemo(() => {
+    if (!outliersEnabled || mode !== "two-rows" || !rowA || !rowB) return new Set<string>();
+    const diffs = cols.map((c) => extractNumber(rowB.data[c]) - extractNumber(rowA.data[c]));
+    const { indices } = detectOutliers(diffs, outlierMethod, 2);
+    const set = new Set<string>();
+    indices.forEach((i) => set.add(cols[i]));
+    return set;
+  }, [outliersEnabled, outlierMethod, mode, cols, rowA, rowB]);
 
   // وضع 1: صفان
   if (mode === "two-rows" && rowA && rowB) {
     return (
       <div className="space-y-2">
-        <p className="text-xs text-muted-foreground">{L.diffFormula}</p>
+        <p className="text-sm font-medium text-foreground/80">{L.diffFormula}</p>
         <div className="overflow-auto border rounded-md">
           <table className="w-full text-sm border-separate border-spacing-0 [&_th]:border [&_td]:border [&_th]:border-border/60 [&_td]:border-border/60">
             <thead className="bg-primary text-primary-foreground">
@@ -1343,9 +2109,13 @@ export function ResultsTable({
                 const diffText = bothText
                   ? String(rowB.data[c] ?? rowA.data[c] ?? "")
                   : fmt(diff);
+                const isOut = twoRowOutliers.has(c);
                 return (
                   <tr key={c} className="border-b last:border-b-0">
-                    <td className="px-3 py-1.5 text-center font-semibold bg-muted/40">{c}</td>
+                    <td className={`px-3 py-1.5 text-center font-semibold bg-muted/40 ${isOut ? "ring-2 ring-amber-500 ring-inset" : ""}`}>
+                      {isOut && <AlertTriangle className="w-3 h-3 inline me-1 text-amber-600" />}
+                      {c}
+                    </td>
                     <td className="px-3 py-1.5 text-center tabular-nums">{isNaN(a) ? String(rowA.data[c] ?? "—") : a}</td>
                     <td className="px-3 py-1.5 text-center tabular-nums">{isNaN(b) ? String(rowB.data[c] ?? "—") : b}</td>
                     <td className="px-3 py-1.5 text-center tabular-nums font-bold" style={{ background: bg, color: fg }}>
@@ -1371,19 +2141,21 @@ export function ResultsTable({
         ? L.refPrevious
         : L.refRaw;
     return (
+      <>
+      {tooltipOverlay}
       <div className="space-y-2">
-        <p className="text-xs text-muted-foreground">
+        <p className="text-sm font-medium text-foreground/80">
           {ref === "raw" ? L.rawValues : `${L.matrixRefLabel}: ${headerNote}`}
         </p>
         <div className="overflow-auto border rounded-md">
           <table className="w-full text-sm border-separate border-spacing-0 [&_th]:border [&_td]:border [&_th]:border-border/60 [&_td]:border-border/60">
             <thead className="bg-primary text-primary-foreground">
               <tr>
-                <th className="px-3 py-2 text-center border-b-[3px] border-b-primary sticky start-0 bg-primary z-10">
+                <th className="px-3 py-2.5 text-center text-base font-bold border-b-[3px] border-b-primary sticky start-0 bg-primary z-10">
                   {L.row}
                 </th>
                 {cols.map((c) => (
-                  <th key={c} className="px-3 py-2 text-center border-b-[3px] border-b-primary whitespace-nowrap">
+                  <th key={c} className="px-3 py-2.5 text-center text-base font-bold border-b-[3px] border-b-primary whitespace-nowrap">
                     {c}
                   </th>
                 ))}
@@ -1399,6 +2171,8 @@ export function ResultsTable({
                     const v = extractNumber(r.data[c]);
                     let diff = NaN;
                     let displayText = "—";
+                    let diffPart: string | null = null;
+                    let valuePart: string = "—";
 
                     if (ref === "raw") {
                       // عرض القيمة الخام + تلوين حسب العتبات
@@ -1425,8 +2199,11 @@ export function ResultsTable({
                         displayText = isNaN(v)
                           ? String(r.data[c] ?? "")
                           : String(v);
+                        valuePart = displayText;
                       } else {
                         displayText = `${fmt(diff)} (${v})`;
+                        diffPart = fmt(diff);
+                        valuePart = String(v);
                       }
                     } else if (ref === "previous") {
                       if (i === 0) {
@@ -1446,19 +2223,52 @@ export function ResultsTable({
                         displayText = isNaN(v)
                           ? String(r.data[c] ?? "")
                           : String(v);
+                        valuePart = displayText;
                       } else {
                         displayText = `${fmt(diff)} (${v})`;
+                        diffPart = fmt(diff);
+                        valuePart = String(v);
                       }
                     }
 
                     const { bg, fg } = colorForDiff(diff, bands);
+                    const isOut = outliersByCol.get(c)?.has(i) ?? false;
+                    const refRowForCell = ref === "first" ? rows[0] : (ref === "previous" && i > 0 ? rows[i - 1] : null);
+                    const refRowName = refRowForCell ? rowLabel(refRowForCell) : "";
                     return (
                       <td
                         key={c}
-                        className="px-3 py-1.5 text-center tabular-nums font-medium whitespace-nowrap"
+                        className={`px-3 py-3 text-center tabular-nums whitespace-nowrap relative cursor-pointer transition-all ${isOut ? "ring-2 ring-amber-500 ring-inset" : ""} ${openCellKey === `m-${r.id}-${c}` ? "ring-[4px] ring-sky-500 ring-inset shadow-[0_0_0_3px_rgba(14,165,233,0.45),inset_0_0_0_2px_white] z-20 outline outline-2 outline-sky-900" : ""}`}
                         style={{ background: bg, color: fg }}
+                        onClick={(e) => {
+                          const refRow = ref === "first" ? rows[0] : (ref === "previous" && i > 0 ? rows[i - 1] : null);
+                          const baseVal = ref === "first" ? extractNumber(rows[0].data[c]) : (ref === "previous" && i > 0 ? extractNumber(rows[i - 1].data[c]) : NaN);
+                          const pctStr = (diffPart !== null && !isNaN(baseVal) && baseVal !== 0)
+                            ? `${diff > 0 ? "+" : ""}${((diff / baseVal) * 100).toFixed(1)}%`
+                            : undefined;
+                          toggleCell(`m-${r.id}-${c}`, {
+                            measure: c,
+                            rowLabel: rowLabel(r),
+                            current: valuePart,
+                            refLabel: refRow ? rowLabel(refRow) : undefined,
+                            refValue: refRow && !isNaN(baseVal) ? String(baseVal) : undefined,
+                            diff: diffPart ?? undefined,
+                            pct: pctStr,
+                            isOutlier: isOut,
+                            x: e.clientX,
+                            y: e.clientY,
+                          });
+                        }}
                       >
-                        {displayText}
+                        {isOut && <AlertTriangle className="w-3 h-3 absolute top-1 end-1" />}
+                        {diffPart !== null ? (
+                          <div className="flex flex-col items-center justify-center">
+                            <span className="text-[18px] font-bold tabular-nums leading-none">{diffPart}</span>
+                            <span className="text-[10px] opacity-55 font-medium tabular-nums leading-none mt-1.5 uppercase tracking-wider">{valuePart}</span>
+                          </div>
+                        ) : (
+                          <span className="font-semibold text-sm">{displayText}</span>
+                        )}
                       </td>
                     );
                   })}
@@ -1468,23 +2278,26 @@ export function ResultsTable({
           </table>
         </div>
       </div>
+      </>
     );
   }
 
   // وضع 3: متتالي (كل صف − الصف السابق)
   if (mode === "sequential") {
     return (
+      <>
+      {tooltipOverlay}
       <div className="space-y-2">
-        <p className="text-xs text-muted-foreground">{L.sequentialFormula}</p>
+        <p className="text-sm font-medium text-foreground/80">{L.sequentialFormula}</p>
         <div className="overflow-auto border rounded-md">
           <table className="w-full text-sm border-separate border-spacing-0 [&_th]:border [&_td]:border [&_th]:border-border/60 [&_td]:border-border/60">
             <thead className="bg-primary text-primary-foreground">
               <tr>
-                <th className="px-3 py-2 text-center border-b-[3px] border-b-primary sticky start-0 bg-primary z-10">
+                <th className="px-3 py-2.5 text-center text-base font-bold border-b-[3px] border-b-primary sticky start-0 bg-primary z-10">
                   {L.row}
                 </th>
                 {cols.map((c) => (
-                  <th key={c} className="px-3 py-2 text-center border-b-[3px] border-b-primary whitespace-nowrap">
+                  <th key={c} className="px-3 py-2.5 text-center text-base font-bold border-b-[3px] border-b-primary whitespace-nowrap">
                     {c}
                   </th>
                 ))}
@@ -1513,10 +2326,34 @@ export function ResultsTable({
                     return (
                       <td
                         key={c}
-                        className="px-3 py-1.5 text-center tabular-nums font-medium"
+                        className={`px-3 py-3 text-center tabular-nums cursor-pointer transition-all ${openCellKey === `s-${r.id}-${c}` ? "ring-[4px] ring-sky-500 ring-inset shadow-[0_0_0_3px_rgba(14,165,233,0.45),inset_0_0_0_2px_white] z-20 outline outline-2 outline-sky-900" : ""}`}
                         style={{ background: bg, color: fg }}
+                        onClick={(e) => {
+                          const pctStr = (!isNaN(diff) && prev !== 0)
+                            ? `${diff > 0 ? "+" : ""}${((diff / prev) * 100).toFixed(1)}%`
+                            : undefined;
+                          toggleCell(`s-${r.id}-${c}`, {
+                            measure: c,
+                            rowLabel: rowLabel(r),
+                            current: String(curr),
+                            refLabel: rowLabel(rows[i - 1]),
+                            refValue: String(prev),
+                            diff: !isNaN(diff) ? fmt(diff) : undefined,
+                            pct: pctStr,
+                            isOutlier: false,
+                            x: e.clientX,
+                            y: e.clientY,
+                          });
+                        }}
                       >
-                        {fmt(diff)}
+                        {isNaN(diff) ? (
+                          <span className="font-semibold text-sm">{fmt(diff)}</span>
+                        ) : (
+                          <div className="flex flex-col items-center justify-center">
+                            <span className="text-[18px] font-bold tabular-nums leading-none">{fmt(diff)}</span>
+                            <span className="text-[10px] opacity-55 font-medium tabular-nums leading-none mt-1.5 uppercase tracking-wider">{curr}</span>
+                          </div>
+                        )}
                       </td>
                     );
                   })}
@@ -1526,6 +2363,7 @@ export function ResultsTable({
           </table>
         </div>
       </div>
+      </>
     );
   }
 

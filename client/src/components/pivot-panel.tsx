@@ -14,6 +14,7 @@ import {
 import { Table2, Download } from "lucide-react";
 import { LangContext } from "@/lib/i18n";
 import { apiRequest } from "@/lib/queryClient";
+import { useTransferPermissions } from "@/hooks/use-transfer-permissions";
 
 interface PivotPanelProps {
   datasetId: number;
@@ -34,6 +35,7 @@ type Agg = "count" | "sum" | "avg" | "min" | "max";
 const NONE_COL = "__NONE__";
 
 export default function PivotPanel({ datasetId, columns }: PivotPanelProps) {
+  const { canExport } = useTransferPermissions();
   const { t, lang } = useContext(LangContext);
   const [rowColumn, setRowColumn] = useState(columns[0] || "");
   const [colColumn, setColColumn] = useState<string>(NONE_COL);
@@ -61,6 +63,7 @@ export default function PivotPanel({ datasetId, columns }: PivotPanelProps) {
       : Number(n.toFixed(2)).toLocaleString(lang === "ar" ? "ar-EG" : "en-US");
 
   const exportCsv = () => {
+    if (!canExport) return;
     if (!pivot.data) return;
     const { rowLabels, colLabels, matrix, rowTotals, colTotals, grandTotal } = pivot.data;
     const showCols = colColumn !== NONE_COL;
@@ -195,7 +198,7 @@ export default function PivotPanel({ datasetId, columns }: PivotPanelProps) {
             {t.pivot.compute}
           </Button>
           {pivot.data && (
-            <Button variant="outline" onClick={exportCsv} data-testid="button-pivot-export">
+            <Button variant="outline" onClick={exportCsv} disabled={!canExport} data-testid="button-pivot-export">
               <Download className="w-4 h-4 me-2" />
               {t.pivot.exportCsv}
             </Button>

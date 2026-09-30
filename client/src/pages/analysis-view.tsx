@@ -186,7 +186,10 @@ function buildExportCells(snap: Snapshot): {
   return { headers: [], rows: [] };
 }
 
+import { useTransferPermissions } from "@/hooks/use-transfer-permissions";
+
 export default function AnalysisViewPage() {
+  const { canExport } = useTransferPermissions();
   const [location] = useLocation();
   const { lang: globalLang } = useContext(LangContext);
   const tableContainerRef = useRef<HTMLDivElement>(null);
@@ -282,6 +285,7 @@ export default function AnalysisViewPage() {
 
   // تصدير Excel مع ألوان وتنسيقات
   const exportExcel = async () => {
+    if (!canExport) return;
     if (!snapshot || !snapshot.computed) return;
     const { headers, rows } = buildExportCells(snapshot);
 
@@ -359,6 +363,7 @@ export default function AnalysisViewPage() {
 
   // طباعة
   const handlePrint = () => {
+    if (!canExport) return;
     window.print();
   };
 
@@ -375,7 +380,7 @@ export default function AnalysisViewPage() {
   return (
     <div className="min-h-screen bg-background text-foreground">
       <header className="border-b border-border bg-sidebar sticky top-0 z-50">
-        <div className="max-w-7xl mx-auto px-6 h-14 flex items-center justify-between gap-4 no-print">
+        <div className="w-full px-4 h-14 flex items-center justify-between gap-4 no-print">
           <div className="flex items-center gap-3">
             <div className="w-8 h-8 rounded-lg bg-primary text-primary-foreground flex items-center justify-center shrink-0">
               <Ruler className="w-4 h-4" />
@@ -398,6 +403,7 @@ export default function AnalysisViewPage() {
                   onClick={exportExcel}
                   className="h-8 gap-1.5"
                   data-testid="button-export-excel"
+                  disabled={!canExport}
                 >
                   <FileSpreadsheet className="w-3.5 h-3.5" />
                   {isAr ? "تصدير Excel" : "Export Excel"}
@@ -408,6 +414,7 @@ export default function AnalysisViewPage() {
                   onClick={handlePrint}
                   className="h-8 gap-1.5"
                   data-testid="button-print"
+                  disabled={!canExport}
                 >
                   <Printer className="w-3.5 h-3.5" />
                   {isAr ? "طباعة" : "Print"}
@@ -434,7 +441,7 @@ export default function AnalysisViewPage() {
         </div>
       </header>
 
-      <main className="max-w-7xl mx-auto px-6 py-6 print-main" ref={tableContainerRef}>
+      <main className="w-full px-4 py-4 print-main" ref={tableContainerRef}>
         {!snapshot || !snapshot.computed ? (
           <Card>
             <CardContent className="p-10 text-center text-muted-foreground text-sm">

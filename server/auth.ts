@@ -99,6 +99,17 @@ authDb.exec(`
     answer_hash TEXT NOT NULL,
     salt TEXT NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS dataset_versions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    dataset_id INTEGER NOT NULL,
+    user_id INTEGER,
+    label TEXT,
+    snapshot TEXT NOT NULL,
+    columns TEXT,
+    row_count INTEGER,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_dataset_versions_ds ON dataset_versions(dataset_id, created_at DESC);
 `);
 
 // Migration: إضافة أعمدة جديدة للجداول الموجودة
@@ -142,6 +153,31 @@ try {
   }
 } catch (e) {
   // الجدول قد لا يكون موجوداً بعد - ستتم الإضافة في storage init
+}
+
+// Migration: إضافة deleted_at للـ soft delete (تحسين #14) و theme لل dark mode في DB (تحسين #10)
+try {
+  const dsCols = authDb.prepare("PRAGMA table_info(datasets)").all() as { name: string }[];
+  if (dsCols.length > 0 && !dsCols.some((c) => c.name === "deleted_at")) {
+    authDb.exec("ALTER TABLE datasets ADD COLUMN deleted_at INTEGER");
+    console.log("[migration] deleted_at column added to datasets");
+  }
+  const userCols2 = authDb.prepare("PRAGMA table_info(users)").all() as { name: string }[];
+  if (!userCols2.some((c) => c.name === "theme")) {
+    authDb.exec("ALTER TABLE users ADD COLUMN theme TEXT");
+    console.log("[migration] theme column added to users");
+  }
+  if (!userCols2.some((c) => c.name === "lang")) {
+    authDb.exec("ALTER TABLE users ADD COLUMN lang TEXT");
+    console.log("[migration] lang column added to users");
+  }
+  // L: tags (JSON نصي) للداتاست
+  if (dsCols.length > 0 && !dsCols.some((c) => c.name === "tags")) {
+    authDb.exec("ALTER TABLE datasets ADD COLUMN tags TEXT");
+    console.log("[migration] tags column added to datasets");
+  }
+} catch (e) {
+  console.error("[migration] deleted_at/theme/tags error:", e);
 }
 
 function hashPassword(password: string, salt: string): string {
@@ -234,6 +270,7 @@ export function requireAuth(
 // كل ميزة لها مفتاح فريد. الأدمن يملك كل الميزات دومًا.
 export const FEATURES = [
   "upload",          // رفع ملفات
+  "import_templates", // استيراد قوالب التحليل JSON
   "explore",         // استعراض + فلترة
   "analyze",         // تحليل عمود إحصائي
   "pivot",           // جدول محوري
@@ -514,6 +551,7 @@ export function registerAuthRoutes(app: Express) {
         username: user.username,
         role: user.role,
         mustChangePassword: !!(user as any).must_change_password,
+        permissions: getUserPermissions(user.id, user.role),
       },
     });
   });
